@@ -1,5 +1,5 @@
 // Network first, fall back to cache, so the app opens even with bad signal.
-const C = 'knockmap-v1';
+const C = 'knockmap-v2';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {
@@ -7,6 +7,6 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   const appFile = u.origin === location.origin || u.host === 'cdnjs.cloudflare.com';
   if (!appFile) return;
-  e.respondWith(fetch(e.request).then(r => { const copy = r.clone(); caches.open(C).then(c => c.put(e.request, copy)); return r; })
+  e.respondWith(fetch(e.request, { cache: 'no-cache' }).then(r => { const copy = r.clone(); caches.open(C).then(c => c.put(e.request, copy)); return r; })
     .catch(() => caches.match(e.request)));
 });

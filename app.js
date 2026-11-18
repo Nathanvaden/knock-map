@@ -683,7 +683,7 @@ function renderSettings() {
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
   <div class="card"><h3>Put it on your home screen</h3><p class="small">Open this page in Chrome, tap ⋮ then <b>Add to Home screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors</p>`;
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v2</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
