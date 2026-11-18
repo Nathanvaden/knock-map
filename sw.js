@@ -1,5 +1,5 @@
 // Network first, fall back to cache, so the app opens even with bad signal.
-const C = 'knockmap-v4';
+const C = 'knockmap-v5';
 self.addEventListener('install', e => self.skipWaiting());
 self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', e => {

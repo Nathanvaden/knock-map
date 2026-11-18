@@ -235,6 +235,7 @@ async function loadBusinesses(refreshAll_) {
       reindex(); drawMarkers();
     }
     setLoadMsg(`Done. ${BIZ.length} businesses on your map. Check the Map tab.`);
+    pushBizList();
     toast('Businesses loaded');
   } catch (err) {
     const left = zipsLeft();
@@ -266,6 +267,27 @@ async function pullRemote() {
   else { const raw = await gh(DATA_FILE, { headers: { Accept: 'application/vnd.github.raw+json' } }); text = await raw.text(); }
   return { sha: j.sha, data: JSON.parse(text) };
 }
+// The business list is shared through the data repo too, so a second device doesn't have to pull from OpenStreetMap.
+async function pushBizList() {
+  if (!syncReady() || !BIZ.length) return;
+  try {
+    let sha = null; const h = await gh('businesses.json'); if (h.ok) sha = (await h.json()).sha;
+    const content = utf8ToB64(JSON.stringify({ at: bizFetchedAt, zips: bizZips, biz: BIZ }));
+    await gh('businesses.json', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Business list', content, ...(sha ? { sha } : {}) }) });
+  } catch (e) { console.warn('business list upload failed', e); }
+}
+async function pullBizList(force) {
+  if (!syncReady() || (BIZ.length && !force)) return false;
+  try {
+    const r = await gh('businesses.json', { headers: { Accept: 'application/vnd.github.raw+json' } });
+    if (!r.ok) return false;
+    const j = await r.json(); if (!j.biz || !j.biz.length) return false;
+    BIZ = j.biz; bizZips = j.zips || {}; bizFetchedAt = j.at || Date.now();
+    applyMoves(); await kv.set('biz', BIZ); await kv.set('bizZips', bizZips); await kv.set('bizAt', bizFetchedAt);
+    reindex(); refreshAll(); renderSettingsIfOpen(); toast(BIZ.length + ' businesses copied from your other device');
+    return true;
+  } catch (e) { return false; }
+}
 function mergeInto(local, remote) {
   if (!remote) return local;
   const m = blankState();
@@ -294,7 +316,7 @@ async function sync(manual) {
       state = mergeInto(state, data);
       const body = JSON.stringify({ message: 'Knock log ' + new Date().toISOString(), content: utf8ToB64(JSON.stringify(state)), ...(sha ? { sha } : {}) });
       const r = await gh(DATA_FILE, { method: 'PUT', body, headers: { 'Content-Type': 'application/json' } });
-      if (r.ok) { dirty = false; settings.lastSync = Date.now(); await saveLocal(); setBadge('ok'); if (manual) toast('Synced'); uploadPendingPhotos(); break; }
+      if (r.ok) { dirty = false; settings.lastSync = Date.now(); await saveLocal(); setBadge('ok'); if (manual) toast('Synced'); uploadPendingPhotos(); if (!BIZ.length) pullBizList(); else if (!settings.bizPushed) { settings.bizPushed = true; pushBizList(); } break; }
       if (r.status !== 409 && r.status !== 422) throw new Error('GitHub ' + r.status);
     }
     reindex(); refreshAll();
@@ -800,7 +822,7 @@ function renderSettings() {
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
   <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v4</p>`;
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v5</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
