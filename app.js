@@ -141,26 +141,49 @@ function typeLabel(t) {
   const v = t.shop || t.amenity || t.office || t.healthcare || t.craft || t.tourism || t.leisure || t.industrial || t.building || '';
   return v && v !== 'yes' ? v.replace(/_/g, ' ') : '';
 }
-async function pullOSM(onProgress) {
-  const [s, w, n, e] = territoryBBox();
+function zipBBox(f) {
+  let s = 90, w = 180, n = -90, e = -180;
+  const g = f.geometry; const polys = g.type === 'Polygon' ? [g.coordinates] : g.coordinates;
+  for (const p of polys) for (const [x, y] of p[0]) { if (y < s) s = y; if (y > n) n = y; if (x < w) w = x; if (x > e) e = x; }
+  return [s, w, n, e].map(v => +v.toFixed(5));
+}
+function osmQuery([s, w, n, e]) {
   const bb = `(${s},${w},${n},${e})`;
-  const q = `[out:json][timeout:180];(
+  return `[out:json][timeout:90];(
 nwr["name"]["shop"]${bb};nwr["name"]["office"]${bb};nwr["name"]["craft"]${bb};nwr["name"]["healthcare"]${bb};
 nwr["name"]["amenity"]${bb};nwr["name"]["tourism"~"hotel|motel|guest_house|hostel"]${bb};
 nwr["name"]["leisure"~"fitness_centre|sports_centre|golf_course|bowling_alley|water_park|marina|amusement_arcade|dance|trampoline_park|horse_riding"]${bb};
 nwr["name"]["industrial"]${bb};nwr["name"]["man_made"="works"]${bb};
 nwr["name"]["building"~"^(commercial|industrial|warehouse|retail|office|hotel|storage)$"]${bb};
 );out center tags;`;
-  let data, lastErr;
+}
+async function overpass(q) {
+  let lastErr;
   for (const url of OVERPASS) {
-    try {
-      onProgress && onProgress('Asking OpenStreetMap (' + new URL(url).host + ')… this can take a minute');
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      data = await r.json(); break;
-    } catch (err) { lastErr = err; }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        if (r.status === 429 || r.status === 504) { lastErr = new Error('server busy (' + r.status + ')'); await new Promise(z => setTimeout(z, 4000)); continue; }
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const j = await r.json();
+        if (j.remark && /error|timed out|out of memory/i.test(j.remark)) throw new Error(j.remark.slice(0, 80));
+        return j.elements || [];
+      } catch (err) { lastErr = err; break; }
+    }
   }
-  if (!data) throw lastErr || new Error('No response');
+  throw lastErr || new Error('No response');
+}
+async function pullOSM(onProgress) {
+  // one small request per zip so no single request is too big for the free servers
+  const byId = new Map();
+  const feats = TERRITORY.features;
+  for (let i = 0; i < feats.length; i++) {
+    const f = feats[i];
+    onProgress && onProgress(`Loading ${f.properties.zip} ${f.properties.city} (${i + 1} of ${feats.length})… ${byId.size} found so far`);
+    const els = await overpass(osmQuery(zipBBox(f)));
+    for (const el of els) byId.set(el.type + el.id, el);
+  }
+  const data = { elements: [...byId.values()] };
   onProgress && onProgress('Sorting ' + data.elements.length + ' results into your zips…');
   const out = [];
   for (const el of data.elements) {
@@ -674,8 +697,8 @@ $('#settings').addEventListener('click', async e => {
       BIZ = fresh.concat(keep); bizFetchedAt = Date.now();
       applyMoves();
       await kv.set('biz', BIZ); await kv.set('bizAt', bizFetchedAt);
-      reindex(); refreshAll(); toast('Loaded ' + fresh.length + ' businesses');
-    } catch (err) { msg.textContent = 'Could not reach OpenStreetMap: ' + err.message + '. Try again in a minute.'; t.disabled = false; }
+      reindex(); refreshAll(); renderSettings(); $('#loadMsg').textContent = 'Done: ' + fresh.length + ' businesses loaded. Check the Map tab.'; toast('Loaded ' + fresh.length + ' businesses');
+    } catch (err) { msg.textContent = 'Could not load: ' + err.message + '. Keep this screen open and try again in a minute.'; msg.style.color = '#e5484d'; t.disabled = false; }
   }
   if (t.id === 'saveSync') {
     settings.owner = $('#sOwner').value.trim(); settings.repo = $('#sRepo').value.trim(); settings.token = $('#sToken').value.trim();
