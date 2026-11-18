@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f172a">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Knock Map">
+<title>Knock Map</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div id="searchwrap">
+      <input id="search" type="search" placeholder="Search businesses" autocomplete="off">
+    </div>
+    <button id="filterBtn" class="iconbtn" aria-label="Filters">Filter<span id="filterDot" class="dot hidden"></span></button>
+    <span id="syncBadge" class="sync" title="Sync status">•</span>
+  </header>
+
+  <main>
+    <section id="view-map" class="view active">
+      <div id="map"></div>
+      <div id="mapStats"></div>
+      <div class="fabs">
+        <button id="layerBtn" class="fab small" aria-label="Map style">Sat</button>
+        <button id="addBtn" class="fab small" aria-label="Add business">+</button>
+        <button id="locateBtn" class="fab" aria-label="My location">◎</button>
+      </div>
+      <div id="placeBanner" class="banner hidden">Drag the map so the crosshair is on the business, then tap <b>Place here</b>.
+        <div class="row"><button id="placeCancel" class="btn ghost">Cancel</button><button id="placeOk" class="btn primary">Place here</button></div>
+      </div>
+      <div id="crosshair" class="hidden">+</div>
+    </section>
+
+    <section id="view-list" class="view">
+      <div class="listhead">
+        <select id="sortSel">
+          <option value="dist">Closest first</option>
+          <option value="name">A to Z</option>
+          <option value="recent">Recently visited</option>
+        </select>
+        <span id="listCount"></span>
+      </div>
+      <div id="list"></div>
+    </section>
+
+    <section id="view-follow" class="view"><div id="follow"></div></section>
+    <section id="view-stats" class="view"><div id="stats"></div></section>
+    <section id="view-settings" class="view"><div id="settings"></div></section>
+  </main>
+
+  <nav id="tabs">
+    <button data-view="map" class="active">Map</button>
+    <button data-view="list">Near me</button>
+    <button data-view="follow">Follow-ups<span id="fuCount" class="badge hidden"></span></button>
+    <button data-view="stats">Stats</button>
+    <button data-view="settings">Setup</button>
+  </nav>
+</div>
+
+<div id="sheet" class="sheet hidden" aria-hidden="true">
+  <div class="grab"></div>
+  <div id="sheetBody"></div>
+</div>
+<div id="modal" class="modal hidden"><div class="modalcard" id="modalBody"></div></div>
+<div id="toast" class="toast hidden"></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="territory.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
