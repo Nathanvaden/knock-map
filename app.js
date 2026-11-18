@@ -294,7 +294,7 @@ async function sync(manual) {
       state = mergeInto(state, data);
       const body = JSON.stringify({ message: 'Knock log ' + new Date().toISOString(), content: utf8ToB64(JSON.stringify(state)), ...(sha ? { sha } : {}) });
       const r = await gh(DATA_FILE, { method: 'PUT', body, headers: { 'Content-Type': 'application/json' } });
-      if (r.ok) { dirty = false; settings.lastSync = Date.now(); await saveLocal(); setBadge('ok'); if (manual) toast('Synced'); break; }
+      if (r.ok) { dirty = false; settings.lastSync = Date.now(); await saveLocal(); setBadge('ok'); if (manual) toast('Synced'); uploadPendingPhotos(); break; }
       if (r.status !== 409 && r.status !== 422) throw new Error('GitHub ' + r.status);
     }
     reindex(); refreshAll();
@@ -401,8 +401,8 @@ function closeSheet() { current = null; $('#sheet').classList.add('hidden'); dra
 function renderSheet(opts = {}) {
   const id = current, b = bizIndex.get(id); if (!b) return closeSheet();
   const r = rec(id) || {}; const st = statusOf(id); const g = r.g || {};
-  const phone = r.phone || g.phone || b.phone; const web = g.web || b.web;
-  const addr = g.addr || [b.addr, b.city].filter(Boolean).join(', ');
+  const phone = r.phone || g.phone || b.phone; const web = g.web || r.webCard || b.web;
+  const addr = g.addr || r.addrCard || [b.addr, b.city].filter(Boolean).join(', ');
   const d = me ? fmtMi(dist(me.lat, me.lon, b.lat, b.lon)) : '';
   const lastV = (r.visits || [])[r.visits ? r.visits.length - 1 : 0];
   const navUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + b.lat + ',' + b.lon;
@@ -416,6 +416,7 @@ function renderSheet(opts = {}) {
     ${web ? `<a href="${esc(/^https?:/.test(web) ? web : 'https://' + web)}" target="_blank" rel="noopener">Website</a>` : ''}
     <a href="https://www.google.com/search?q=${encodeURIComponent(b.name + ' ' + (b.city || ''))}" target="_blank" rel="noopener">Google it</a>
   </div>
+  <label class="btn block scanbtn">📇 Scan business card<input type="file" accept="image/*" data-scan hidden></label>
   <div class="small" style="margin-top:6px">Tap what happened. It logs the visit with the time.</div>
   <div class="outcomes">${STATUSES.filter(s => s.k !== 'new').map(s => `<button data-out="${s.k}" style="background:${s.color}${s.k === 'dead' ? ';color:#fff' : ''}" class="${s.k === st ? 'cur' : ''}">${s.label}</button>`).join('')}</div>
   <div class="fu-box"><div class="lbl">Follow-up${r.followUp ? ': <b>' + fmtDate(r.followUp) + '</b>' : ''}</div>
@@ -434,6 +435,7 @@ function renderSheet(opts = {}) {
    <div class="field"><label>Contract ends</label><input data-f="contractEnd" type="month" value="${esc(r.contractEnd || '')}"></div></div>
    <div class="field"><label>What they have now</label><input data-f="currentSystem" value="${esc(r.currentSystem || '')}" placeholder="Alarm, cameras, access control, fire…"></div>
    ${(state.fields || []).map(f => customFieldHtml(f, r)).join('')}
+   ${(r.cards || []).length ? `<div class="field"><label>Business cards (${r.cards.length})</label>${r.cards.map(c => `<div class="cardrow"><div><b>${esc(c.name || 'No name')}</b>${c.title ? ' · ' + esc(c.title) : ''}<br><span class="small">${[c.cell && 'Cell ' + c.cell, c.phone && 'Office ' + c.phone, c.email, c.web].filter(Boolean).map(esc).join(' · ')}</span></div>${c.photo ? `<button class="chip" data-photo="${esc(c.photo)}">Photo</button>` : ''}</div>`).join('')}</div>` : ''}
    <div class="field"><label>Notes</label><textarea data-f="notes" placeholder="Pain points, best time to come back, who to ask for…">${esc(r.notes || '')}</textarea></div>
    <datalist id="provList">${PROVIDERS.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
   </details>`;
@@ -505,9 +507,11 @@ $('#sheet').addEventListener('click', e => {
     $('#mCancel').onclick = hideModal;
   }
   if (act === 'move') startPlace(id);
+  if (t.dataset.photo) showCardPhoto(t.dataset.photo);
 });
 $('#sheet').addEventListener('change', e => {
   const el = e.target; if (!current) return;
+  if (el.dataset.scan !== undefined && el.files && el.files[0]) { const f = el.files[0]; el.value = ''; scanForBiz(current, f); return; }
   if (el.id === 'fuPick') { const r = touch(current); r.followUp = el.value; commit(); renderSheet(); return; }
   if (el.dataset.f) { const r = touch(current); r[el.dataset.f] = el.value.trim(); commit(); }
   if (el.dataset.cf) { const r = touch(current); r.custom = r.custom || {}; r.custom[el.dataset.cf] = el.value; commit(); }
@@ -561,7 +565,10 @@ $('#placeOk').onclick = () => {
     commit(); openBiz(id); return;
   }
   const z = zipOf(c.lat, c.lng);
+  let pendingCard = null;
   showModal(`<h3>Add a business</h3>
+   <label class="btn block scanbtn">📇 Scan their card to fill this in<input type="file" accept="image/*" id="nbScan" hidden></label>
+   <div id="nbScanMsg" class="small"></div>
    <div class="field"><label>Name</label><input id="nbName" placeholder="Business name"></div>
    <div class="field"><label>Type</label><select id="nbCat">${CATS.map(x => `<option>${x}</option>`).join('')}</select></div>
    <div class="field"><label>Address (optional)</label><input id="nbAddr" placeholder="1234 W Bell Rd"></div>
@@ -570,13 +577,91 @@ $('#placeOk').onclick = () => {
    <button class="btn block primary" id="nbOk">Add it</button><button class="btn block ghost" id="nbCancel">Cancel</button>`);
   setTimeout(() => $('#nbName').focus(), 50);
   $('#nbCancel').onclick = hideModal;
+  $('#nbScan').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      const res = await CardScan.read(f, m => $('#nbScanMsg').textContent = m);
+      const p = CardScan.parse(res.lines, '');
+      $('#nbName').value = $('#nbName').value || p.company; $('#nbAddr').value = $('#nbAddr').value || p.addr; $('#nbPhone').value = $('#nbPhone').value || p.phone || p.cell;
+      pendingCard = { res, p };
+      $('#nbScanMsg').textContent = 'Got it. Check the name, then tap Add it. The contact info goes on the business.';
+    } catch (err) { $('#nbScanMsg').textContent = 'Could not read the card: ' + err.message; }
+  };
   $('#nbOk').onclick = () => {
     const name = $('#nbName').value.trim(); if (!name) return $('#nbName').focus();
     const nid = 'c' + Date.now().toString(36);
     state.custom[nid] = { id: nid, name, cat: $('#nbCat').value, type: '', lat: +c.lat.toFixed(6), lon: +c.lng.toFixed(6), addr: $('#nbAddr').value.trim(), city: z ? z.city : '', zip: z ? z.zip : '', phone: $('#nbPhone').value.trim(), web: '', hours: '', updatedAt: Date.now() };
     state.updatedAt = Date.now(); hideModal(); reindex(); commit(); openBiz(nid);
+    if (pendingCard) reviewCard(nid, pendingCard.res, pendingCard.p);
   };
 };
+// ---------- business cards ----------
+async function scanForBiz(id, file) {
+  showModal('<h3>Reading the card…</h3><p class="small" id="scanMsg">Starting…</p>');
+  try {
+    const res = await CardScan.read(file, m => { const el = $('#scanMsg'); if (el) el.textContent = m; });
+    reviewCard(id, res, CardScan.parse(res.lines, bizIndex.get(id).name));
+  } catch (err) {
+    showModal(`<h3>Couldn't read that card</h3><p class="small">${esc(err.message)}</p><button class="btn block" id="mClose">OK</button>`);
+    $('#mClose').onclick = hideModal;
+  }
+}
+function reviewCard(id, res, p) {
+  const r = rec(id) || {};
+  const f = (k, label, v, type) => `<div class="field"><label>${label}</label><input id="cd_${k}" type="${type || 'text'}" value="${esc(v || '')}"></div>`;
+  showModal(`<h3>Check what it read</h3><p class="small">Fix anything that's off, then save.</p>
+   <img src="${res.photo}" style="width:100%;border-radius:10px;margin:4px 0 6px" alt="Card photo">
+   <div class="two">${f('name', 'Name', p.name)}${f('title', 'Title', p.title)}</div>
+   <div class="two">${f('cell', 'Cell', p.cell, 'tel')}${f('phone', 'Office phone', p.phone, 'tel')}</div>
+   ${f('email', 'Email', p.email, 'email')}${f('web', 'Website', p.web)}${f('addr', 'Address', p.addr)}
+   <label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type="checkbox" id="cd_dm" ${!r.dm || (p.name && r.dm.toLowerCase() === p.name.toLowerCase()) ? 'checked' : ''} style="width:22px;height:22px"> This is the decision maker</label>
+   <details><summary>Everything it read</summary><pre style="white-space:pre-wrap;font-size:12px">${esc(res.text)}</pre></details>
+   <button class="btn block primary" id="cdSave">Save to ${esc(bizIndex.get(id).name)}</button><button class="btn block ghost" id="cdCancel">Cancel</button>`);
+  $('#cdCancel').onclick = hideModal;
+  $('#cdSave').onclick = async () => {
+    const v = k => $('#cd_' + k).value.trim();
+    const t = Date.now();
+    const card = { t, name: v('name'), title: v('title'), cell: v('cell'), phone: v('phone'), email: v('email'), web: v('web'), addr: v('addr'), photo: 'cards/' + id + '-' + t + '.jpg' };
+    const rr = touch(id);
+    rr.cards = (rr.cards || []).concat(card);
+    if ($('#cd_dm').checked) {
+      if (card.name) rr.dm = card.name; if (card.title) rr.dmTitle = card.title;
+      if (card.cell || card.phone) rr.phone = card.cell || card.phone; if (card.email) rr.email = card.email;
+    }
+    if (card.addr && !bizIndex.get(id).addr) rr.addrCard = card.addr;
+    if (card.web && !bizIndex.get(id).web) { const b = bizIndex.get(id); if (b.id.startsWith('c')) b.web = card.web; else rr.webCard = card.web; }
+    try { await kv.set('card:' + card.photo, res.photo); } catch (e) {}
+    await addPendingPhoto(card.photo);
+    hideModal(); commit(); renderSheet({ openDetails: true }); toast('Card saved');
+  };
+}
+async function addPendingPhoto(path) { const list = (await kv.get('pendingPhotos')) || []; if (!list.includes(path)) list.push(path); await kv.set('pendingPhotos', list); }
+async function uploadPendingPhotos() {
+  if (!syncReady()) return;
+  const list = (await kv.get('pendingPhotos')) || []; const left = [];
+  for (const path of list) {
+    try {
+      const data = await kv.get('card:' + path); if (!data) continue;
+      const r = await gh(path, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Card photo', content: data.split(',')[1] }) });
+      if (!r.ok && r.status !== 422) left.push(path); // 422 = already there
+    } catch (e) { left.push(path); }
+  }
+  await kv.set('pendingPhotos', left);
+}
+async function showCardPhoto(path) {
+  showModal('<h3>Card photo</h3><p class="small" id="phMsg">Loading…</p><img id="phImg" style="width:100%;border-radius:10px"><button class="btn block" id="phClose">Close</button>');
+  $('#phClose').onclick = hideModal;
+  try {
+    let src = await kv.get('card:' + path);
+    if (!src && syncReady()) {
+      const r = await gh(path, { headers: { Accept: 'application/vnd.github.raw+json' } });
+      if (!r.ok) throw new Error('not found (' + r.status + ')');
+      src = URL.createObjectURL(await r.blob());
+    }
+    if (!src) throw new Error('photo is only on the phone that scanned it');
+    $('#phImg').src = src; $('#phMsg').remove();
+  } catch (err) { const m = $('#phMsg'); if (m) m.textContent = 'Could not load photo: ' + err.message; }
+}
 function applyMoves() { for (const b of BIZ) { const r = state.records[b.id]; if (r && r.lat) { b.lat = r.lat; b.lon = r.lon; } } }
 
 // ---------- list view ----------
@@ -715,7 +800,7 @@ function renderSettings() {
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
   <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v3</p>`;
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v4</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;

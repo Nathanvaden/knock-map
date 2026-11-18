@@ -125,3 +125,5 @@ details[open] summary::after{content:"▴"}
 .me-dot{width:18px;height:18px;border-radius:50%;background:#2563eb;border:3px solid #fff;box-shadow:0 0 0 2px rgba(37,99,235,.35),0 1px 4px rgba(0,0,0,.4)}
 .ziplabel{background:none;border:0;box-shadow:none;color:#1e3a8a;font-weight:700;font-size:12px;text-shadow:0 0 3px #fff,0 0 3px #fff}
 .ziplabel::before{display:none}
+.scanbtn{text-align:center;background:#0f172a;color:#fff;border-color:#0f172a;margin:6px 0 4px}
+.cardrow{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px}
