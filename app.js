@@ -161,32 +161,23 @@ async function overpass(q) {
   let lastErr;
   for (const url of OVERPASS) {
     for (let attempt = 0; attempt < 2; attempt++) {
+      const ctl = new AbortController(); const timer = setTimeout(() => ctl.abort(), 90000);
       try {
-        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        if (r.status === 429 || r.status === 504) { lastErr = new Error('server busy (' + r.status + ')'); await new Promise(z => setTimeout(z, 4000)); continue; }
+        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
+        if (r.status === 429 || r.status === 504) { lastErr = new Error('server busy (' + r.status + ')'); await new Promise(z => setTimeout(z, 5000)); continue; }
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const j = await r.json();
         if (j.remark && /error|timed out|out of memory/i.test(j.remark)) throw new Error(j.remark.slice(0, 80));
         return j.elements || [];
-      } catch (err) { lastErr = err; break; }
+      } catch (err) { lastErr = err.name === 'AbortError' ? new Error('server took too long') : err; break; }
+      finally { clearTimeout(timer); }
     }
   }
   throw lastErr || new Error('No response');
 }
-async function pullOSM(onProgress) {
-  // one small request per zip so no single request is too big for the free servers
-  const byId = new Map();
-  const feats = TERRITORY.features;
-  for (let i = 0; i < feats.length; i++) {
-    const f = feats[i];
-    onProgress && onProgress(`Loading ${f.properties.zip} ${f.properties.city} (${i + 1} of ${feats.length})… ${byId.size} found so far`);
-    const els = await overpass(osmQuery(zipBBox(f)));
-    for (const el of els) byId.set(el.type + el.id, el);
-  }
-  const data = { elements: [...byId.values()] };
-  onProgress && onProgress('Sorting ' + data.elements.length + ' results into your zips…');
+function toBiz(els, zip) {
   const out = [];
-  for (const el of data.elements) {
+  for (const el of els) {
     const t = el.tags || {};
     if (!t.name) continue;
     if (t.amenity && SKIP_AMENITY.has(t.amenity) && !t.shop && !t.office) continue;
@@ -195,7 +186,7 @@ async function pullOSM(onProgress) {
     const lon = el.lon != null ? el.lon : el.center && el.center.lon;
     if (lat == null) continue;
     const z = zipOf(lat, lon);
-    if (!z) continue;
+    if (!z || z.zip !== zip) continue; // each business belongs to exactly one zip
     const street = [t['addr:housenumber'], t['addr:street']].filter(Boolean).join(' ');
     out.push({
       id: el.type[0] + el.id, name: t.name, cat: catOf(t), type: typeLabel(t), lat: +lat.toFixed(6), lon: +lon.toFixed(6),
@@ -215,6 +206,45 @@ async function pullOSM(onProgress) {
   }
   return kept;
 }
+// Loads one zip at a time and saves after each one, so a dropped connection never loses progress.
+let bizZips = {};            // zip -> time it was last loaded
+let loadStatus = { running: false, msg: '', err: false };
+function zipsLeft() { return TERRITORY.features.filter(f => !bizZips[f.properties.zip]).length; }
+function setLoadMsg(msg, err) { loadStatus.msg = msg; loadStatus.err = !!err; const el = $('#loadMsg'); if (el) { el.textContent = msg; el.style.color = err ? '#e5484d' : ''; } }
+async function loadBusinesses(refreshAll_) {
+  if (loadStatus.running) return;
+  loadStatus.running = true; renderSettingsIfOpen();
+  let wake = null; try { wake = await navigator.wakeLock.request('screen'); } catch (e) {}
+  const feats = TERRITORY.features.filter(f => refreshAll_ || !bizZips[f.properties.zip]);
+  let added = 0;
+  try {
+    for (let i = 0; i < feats.length; i++) {
+      const zp = feats[i].properties;
+      setLoadMsg(`Loading ${zp.zip} ${zp.city} (${i + 1} of ${feats.length})… ${BIZ.length} businesses so far`);
+      let els;
+      try { els = await overpass(osmQuery(zipBBox(feats[i]))); }
+      catch (err) { await new Promise(z => setTimeout(z, 8000)); els = await overpass(osmQuery(zipBBox(feats[i]))); }
+      const fresh = toBiz(els, zp.zip);
+      const freshIds = new Set(fresh.map(b => b.id));
+      // keep businesses you've worked even if they dropped off OpenStreetMap
+      const keep = BIZ.filter(b => b.zip === zp.zip && !freshIds.has(b.id) && state.records[b.id] && (state.records[b.id].visits || []).length);
+      BIZ = BIZ.filter(b => b.zip !== zp.zip).concat(fresh, keep);
+      added += fresh.length; bizZips[zp.zip] = Date.now(); bizFetchedAt = Date.now();
+      applyMoves();
+      await kv.set('biz', BIZ); await kv.set('bizZips', bizZips); await kv.set('bizAt', bizFetchedAt);
+      reindex(); drawMarkers();
+    }
+    setLoadMsg(`Done. ${BIZ.length} businesses on your map. Check the Map tab.`);
+    toast('Businesses loaded');
+  } catch (err) {
+    const left = zipsLeft();
+    setLoadMsg(`Stopped: ${err.message}. Everything loaded so far is saved. Tap the button to pick up the ${left} zip${left === 1 ? '' : 's'} left.`, true);
+  } finally {
+    loadStatus.running = false; try { wake && wake.release(); } catch (e) {}
+    reindex(); refreshAll(); renderSettingsIfOpen();
+  }
+}
+function renderSettingsIfOpen() { if ($('#view-settings').classList.contains('active')) renderSettings(); }
 
 // ---------- GitHub sync ----------
 function syncReady() { return settings.token && settings.owner && settings.repo; }
@@ -289,7 +319,7 @@ let map, renderer, markers = new Map(), meMarker, meCircle, zipLayer, baseStreet
 function initMap() {
   map = L.map('map', { zoomControl: false, preferCanvas: true, tap: true });
   renderer = L.canvas({ padding: 0.5, tolerance: 8 });
-  baseStreet = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { maxZoom: 20, subdomains: 'abcd', attribution: '© OpenStreetMap © CARTO' }).addTo(map);
+  baseStreet = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© OpenStreetMap' }).addTo(map);
   baseSat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Imagery © Esri' });
   zipLayer = L.geoJSON(TERRITORY, {
     style: { color: '#1d4ed8', weight: 2, fill: true, fillOpacity: 0.03, dashArray: '6 5' }, interactive: false,
@@ -650,10 +680,12 @@ function renderSettings() {
   const cnt = BIZ.length, cust = Object.keys(state.custom).length, hid = Object.keys(state.hidden).length;
   $('#settings').innerHTML = `
   <div class="card"><h3>1. Businesses</h3>
-    <p class="small">${cnt ? `${cnt} businesses from OpenStreetMap (pulled ${fmtWhen(bizFetchedAt)}). ${cust} you added. ${hid} hidden.` : 'Nothing loaded yet. Tap the button to pull every business in your zips from OpenStreetMap. Free.'}</p>
-    <button class="btn block primary" id="loadBiz">${cnt ? 'Refresh businesses' : 'Load businesses'}</button>
-    <div id="loadMsg" class="small"></div>
-    <p class="small">Refreshing keeps all your knocks and notes. New places get added. Places that dropped off OpenStreetMap stay on your map if you've logged anything on them.</p>
+    <p class="small">${cnt ? `${cnt} businesses from OpenStreetMap, last pulled ${fmtWhen(bizFetchedAt)}. ${cust} you added. ${hid} hidden.` : 'Nothing loaded yet. Tap the button to pull every business in your zips from OpenStreetMap. Free.'}</p>
+    ${loadStatus.running ? '<button class="btn block primary" disabled>Loading… keep this screen open</button>'
+      : zipsLeft() ? `<button class="btn block primary" id="loadBiz">${cnt ? `Finish loading (${zipsLeft()} zips left)` : 'Load businesses'}</button>`
+      : '<button class="btn block" id="refreshBiz">Refresh all businesses</button>'}
+    <div id="loadMsg" class="small" style="${loadStatus.err ? 'color:#e5484d' : ''}">${esc(loadStatus.msg)}</div>
+    <p class="small">Loading saves after each zip, so if it stops you can pick up where it left off. Refreshing keeps all your knocks and notes.</p>
   </div>
   <div class="card"><h3>2. Cloud backup (GitHub)</h3>
     <p class="small">Saves your knocks to your private <b>knock-data</b> repo so nothing is lost if your phone dies, and so they show up on any device.</p>
@@ -682,24 +714,13 @@ function renderSettings() {
     <button class="btn block" id="expJson">Download full backup (JSON)</button>
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
-  <div class="card"><h3>Put it on your home screen</h3><p class="small">Open this page in Chrome, tap ⋮ then <b>Add to Home screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v2</p>`;
+  <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v3</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
-  if (t.id === 'loadBiz') {
-    t.disabled = true; const msg = $('#loadMsg');
-    try {
-      const fresh = await pullOSM(m => msg.textContent = m);
-      const freshIds = new Set(fresh.map(b => b.id));
-      // keep worked businesses that disappeared from OSM
-      const keep = BIZ.filter(b => !freshIds.has(b.id) && state.records[b.id] && (state.records[b.id].visits || []).length);
-      BIZ = fresh.concat(keep); bizFetchedAt = Date.now();
-      applyMoves();
-      await kv.set('biz', BIZ); await kv.set('bizAt', bizFetchedAt);
-      reindex(); refreshAll(); renderSettings(); $('#loadMsg').textContent = 'Done: ' + fresh.length + ' businesses loaded. Check the Map tab.'; toast('Loaded ' + fresh.length + ' businesses');
-    } catch (err) { msg.textContent = 'Could not load: ' + err.message + '. Keep this screen open and try again in a minute.'; msg.style.color = '#e5484d'; t.disabled = false; }
-  }
+  if (t.id === 'loadBiz') loadBusinesses(false);
+  if (t.id === 'refreshBiz') loadBusinesses(true);
   if (t.id === 'saveSync') {
     settings.owner = $('#sOwner').value.trim(); settings.repo = $('#sRepo').value.trim(); settings.token = $('#sToken').value.trim();
     await saveLocal(); await sync(true); renderSettings();
@@ -816,6 +837,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
     settings = (await kv.get('settings')) || {};
     BIZ = (await kv.get('biz')) || [];
     bizFetchedAt = (await kv.get('bizAt')) || 0;
+    bizZips = (await kv.get('bizZips')) || {};
   } catch (e) { console.warn('storage unavailable', e); }
   applyMoves(); reindex();
   initMap(); drawMarkers(); renderFollow();
@@ -824,6 +846,6 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   if (syncReady()) sync();
   if (!BIZ.length) { switchView('settings'); toast('Start here: tap "Load businesses"'); }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-  window.__km = { get state() { return state; }, get BIZ() { return BIZ; }, logOutcome, openBiz, sync, mergeInto, zipOf, pullOSM };
+  window.__km = { get state() { return state; }, get BIZ() { return BIZ; }, logOutcome, openBiz, sync, mergeInto, zipOf, loadBusinesses };
 })();
 })();
