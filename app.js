@@ -889,6 +889,8 @@ async function importPermits(file, commercialOnly) {
       if (!zip && city && !TERR_CITIES.test(city)) { skippedArea++; continue; }
       const tcol = g(row, 'type');
       // trust an explicit Residential/Commercial permit type when the file has one
+      // not a business moving in or building out: skip
+      if (/compliance inspection|stormwater|grading|infrastructure/i.test(tcol) || /^(fences?|wireless tower.*|annual facilities.*|demolition)$/i.test(g(row, 'work'))) { skippedRes++; continue; }
       const isRes = /residential/i.test(tcol) ? true : /commercial/i.test(tcol) ? false : (RES_RE.test(text) && !COM_RE.test(text));
       if (commercialOnly && isRes) { skippedRes++; continue; }
       const permit = g(row, 'permit');
@@ -1083,7 +1085,7 @@ function renderSettings() {
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
   <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v7</p>`;
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v8</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
