@@ -4,18 +4,19 @@
 
 // ---------- constants ----------
 const STATUSES = [
-  { k: 'new',        label: 'Not visited',     color: '#a3acb8' },
-  { k: 'closed',     label: 'Closed / nobody', color: '#d6c29a' },
-  { k: 'booted',     label: 'Booted',          color: '#ef5b5f' },
-  { k: 'gatekeeper', label: 'Gatekeeper',      color: '#f7a531' },
-  { k: 'dm',         label: 'Talked to DM',    color: '#f2df4b' },
-  { k: 'followup',   label: 'Follow-up',       color: '#4b8ff7' },
-  { k: 'appt',       label: 'Appt set',        color: '#9b6cf6' },
-  { k: 'sold',       label: 'Sold',            color: '#22b357' },
-  { k: 'dead',       label: 'Not a fit',       color: '#475569' },
+  { k: 'new',        label: 'Not visited',     color: '#9aa5b4', hint: 'Haven\'t been in yet' },
+  { k: 'closed',     label: 'Closed / nobody', color: '#c9a86a', hint: 'Locked, or no one there' },
+  { k: 'booted',     label: 'Booted',          color: '#e5484d', hint: 'Asked to leave' },
+  { k: 'gatekeeper', label: 'Gatekeeper',      color: '#f59e0b', hint: 'Talked to front desk only' },
+  { k: 'dm',         label: 'Talked to DM',    color: '#0ea5a4', hint: 'Reached the decision maker' },
+  { k: 'followup',   label: 'Follow-up',       color: '#3b82f6', hint: 'Coming back' },
+  { k: 'appt',       label: 'Appt set',        color: '#8b5cf6', hint: 'Meeting on the books' },
+  { k: 'sold',       label: 'Sold',            color: '#16a34a', hint: 'Closed the deal' },
+  { k: 'dead',       label: 'Not a fit',       color: '#334155', hint: 'Don\'t come back' },
 ];
 const S = Object.fromEntries(STATUSES.map(s => [s.k, s]));
 const CONVO = new Set(['dm', 'followup', 'appt', 'sold']); // reached a decision maker
+const ICON = n => `<svg class="ico"><use href="#i-${n}"/></svg>`;
 const CATS = ['Retail', 'Food & Drink', 'Auto', 'Medical', 'Office', 'Finance', 'Industrial / Trades',
   'Lodging', 'Fitness / Rec', 'Senior / Care', 'School / Childcare', 'Church', 'Storage', 'Other'];
 const PROVIDERS = ['None', 'Unknown', 'ADT', 'Brinks', 'Vivint', 'Pye-Barker', 'Johnson Controls / Tyco',
@@ -334,7 +335,10 @@ async function sync(manual) {
 }
 let syncTimer;
 function scheduleSync() { dirty = true; setBadge('dirty'); clearTimeout(syncTimer); syncTimer = setTimeout(sync, 4000); }
-function setBadge(s) { const b = $('#syncBadge'); b.className = 'sync ' + (s === 'busy' ? '' : s); b.textContent = s === 'busy' ? '↻' : '●'; }
+function setBadge(s) {
+  const b = $('#syncBadge'); b.className = 'sync ' + s;
+  b.title = { ok: 'Backed up to the cloud', dirty: 'Saving…', busy: 'Syncing…', err: 'Cloud backup failed. Check Settings.', off: 'Not connected to cloud backup. Set it up in Settings.' }[s] || '';
+}
 
 async function saveLocal() {
   try { await kv.set('state', state); await kv.set('settings', settings); } catch (e) { console.warn(e); }
@@ -415,7 +419,7 @@ function updateMapStats() {
   if (!map) return;
   const bounds = map.getBounds(); let n = 0, v = 0;
   for (const b of filtered()) if (bounds.contains([b.lat, b.lon])) { n++; if (statusOf(b.id) !== 'new') v++; }
-  $('#mapStats').textContent = BIZ.length || Object.keys(state.custom).length ? (filters.planOnly ? `Today's plan: ${n} stops · ${v} visited` : `${n} in view · ${v} visited`) : 'No businesses loaded yet. Go to Setup.';
+  $('#mapStats').textContent = BIZ.length || Object.keys(state.custom).length ? (filters.planOnly ? `Today's plan: ${n} stops · ${v} visited` : `${n} in view · ${v} visited`) : 'No businesses loaded yet. Open Settings to load them.';
 }
 
 // ---------- GPS ----------
@@ -474,27 +478,27 @@ function renderSheet(opts = {}) {
   const d = me ? fmtMi(dist(me.lat, me.lon, b.lat, b.lon)) : '';
   const lastV = (r.visits || [])[r.visits ? r.visits.length - 1 : 0];
   const navUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + b.lat + ',' + b.lon;
-  let h = `<div class="sh-title"><h3>${esc(b.name)}</h3><button class="closex" data-act="close">✕</button></div>
-  <div class="meta"><span class="pill" style="background:${S[st].color}">${S[st].label}</span>
+  let h = `<div class="sh-title"><h3>${esc(b.name)}</h3><button class="closex" data-act="close" aria-label="Close">${ICON('x')}</button></div>
+  <div class="meta"><span class="pill" style="--c:${S[st].color}">${S[st].label}</span>
    &nbsp;${esc(b.cat)}${b.type ? ' · ' + esc(b.type) : ''}${d ? ' · ' + d : ''}<br>${esc(addr || 'No address on file')} · ${esc(b.zip || '')}
    ${lastV ? '<br>Last visit: ' + fmtWhen(lastV.t) + ' (' + S[lastV.s].label + ')' : ''}
    ${inCooldown(id) ? '<br><b>Cooling off</b> until ' + new Date(inCooldown(id)).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + '. Skipped in day plans till then.' : ''}</div>
   <div class="actions">
-    <a href="${navUrl}" target="_blank" rel="noopener">Directions</a>
-    ${phone ? `<a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">Call</a>` : ''}
-    ${web ? `<a href="${esc(/^https?:/.test(web) ? web : 'https://' + web)}" target="_blank" rel="noopener">Website</a>` : ''}
-    <a href="https://www.google.com/search?q=${encodeURIComponent(b.name + ' ' + (b.city || ''))}" target="_blank" rel="noopener">Google it</a>
+    <a href="${navUrl}" target="_blank" rel="noopener">${ICON('nav')}Directions</a>
+    ${phone ? `<a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">${ICON('phone')}Call</a>` : ''}
+    ${web ? `<a href="${esc(/^https?:/.test(web) ? web : 'https://' + web)}" target="_blank" rel="noopener">${ICON('globe')}Website</a>` : ''}
+    <a href="https://www.google.com/search?q=${encodeURIComponent(b.name + ' ' + (b.city || ''))}" target="_blank" rel="noopener">${ICON('search')}Google</a>
   </div>
-  <label class="btn block scanbtn">📇 Scan business card<input type="file" accept="image/*" data-scan hidden></label>
-  <div class="small" style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span>Tap what happened. It logs the visit with the time.</span>${lastV && ymd(new Date(lastV.t)) === todayStr() ? '<button class="btn primary" data-act="next" style="padding:8px 12px;flex:none">Next closest →</button>' : ''}</div>
-  <div class="outcomes">${STATUSES.filter(s => s.k !== 'new').map(s => `<button data-out="${s.k}" style="background:${s.color}${s.k === 'dead' ? ';color:#fff' : ''}" class="${s.k === st ? 'cur' : ''}">${s.label}</button>`).join('')}</div>
+  <label class="btn block scanbtn">${ICON('card')}Scan a business card<input type="file" accept="image/*" data-scan hidden></label>
+  <div class="sec-label"><span>Log this visit</span>${lastV && ymd(new Date(lastV.t)) === todayStr() ? `<button class="btn primary" data-act="next" style="padding:7px 12px;text-transform:none;letter-spacing:0">Next closest ${ICON('arrow')}</button>` : ''}</div>
+  <div class="outcomes">${STATUSES.filter(s => s.k !== 'new').map(s => `<button data-out="${s.k}" style="--c:${s.color}" class="${s.k === st ? 'cur' : ''}" title="${s.hint}">${s.label}</button>`).join('')}</div>
   <div class="fu-box"><div class="lbl">Follow-up${r.followUp ? ': <b>' + fmtDate(r.followUp) + '</b>' : ''}</div>
    <div class="chips">
     ${[['Tomorrow', 1], ['3 days', 3], ['1 week', 7], ['2 weeks', 14], ['1 month', 30], ['3 months', 90]].map(([l, n]) => `<button class="chip" data-fu="${n}">${l}</button>`).join('')}
     <input type="date" id="fuPick" class="chip" value="${esc(r.followUp || '')}" style="padding:5px 8px">
     ${r.followUp ? '<button class="chip" data-fu="clear">Clear</button>' : ''}
    </div></div>
-  ${['dm', 'followup', 'appt', 'sold'].includes(st) || r.dealInstall || r.dealMonthly ? `<div class="fu-box" style="background:#f0fdf4"><div class="lbl">Deal ${st === 'sold' ? '(sold)' : '(in pipeline)'}</div>
+  ${['dm', 'followup', 'appt', 'sold'].includes(st) || r.dealInstall || r.dealMonthly ? `<div class="fu-box deal"><div class="lbl">Deal ${st === 'sold' ? '(sold)' : '(in pipeline)'}</div>
    <div class="two"><div class="field" style="margin:4px 0"><label>Install $</label><input data-f="dealInstall" type="number" inputmode="decimal" value="${esc(r.dealInstall || '')}" placeholder="0"></div>
    <div class="field" style="margin:4px 0"><label>Monthly $</label><input data-f="dealMonthly" type="number" inputmode="decimal" value="${esc(r.dealMonthly || '')}" placeholder="0"></div></div></div>` : ''}`;
   // details
@@ -522,7 +526,7 @@ function renderSheet(opts = {}) {
   // history
   const vs = (r.visits || []).slice().reverse();
   h += `<div class="hist"><h2 class="sec" style="margin-left:0">Visit history (${vs.length})</h2>
-   ${vs.length ? vs.map(v => `<div class="hrow"><div class="when">${fmtWhen(v.t)}</div><div class="what"><span class="pill" style="background:${S[v.s].color}${v.s === 'dead' ? ';color:#fff' : ''}">${S[v.s].label}</span>${v.note ? '<div>' + esc(v.note) + '</div>' : ''}</div><button class="del" data-delv="${v.t}" aria-label="Delete">✕</button></div>`).join('') : '<div class="small">No visits yet.</div>'}
+   ${vs.length ? vs.map(v => `<div class="hrow"><div class="when">${fmtWhen(v.t)}</div><div class="what"><span class="pill" style="--c:${S[v.s].color}">${S[v.s].label}</span>${v.note ? '<div>' + esc(v.note) + '</div>' : ''}</div><button class="del" data-delv="${v.t}" aria-label="Delete">✕</button></div>`).join('') : '<div class="small">No visits yet.</div>'}
   </div>
   <div class="two" style="margin-top:12px">
    <button class="btn" data-act="move">Move pin</button>
@@ -765,8 +769,8 @@ function renderList() {
     return `<div class="item" data-id="${b.id}"><span class="pin" style="background:${S[st].color}"></span>
      <div class="main"><div class="nm">${esc(b.name)}</div><div class="sub">${esc(b.cat)}${b.addr ? ' · ' + esc(b.addr) : ''}${lv ? ' · ' + fmtWhen(lv.t) : ''}</div></div>
      <div class="right">${d != null ? fmtMi(d) : ''}<br>${S[st].label}</div></div>`;
-  }).join('') + (list.length > listLimit ? `<button class="more" id="moreBtn">Show more (${list.length - listLimit} left)</button>` : '')
-    : `<div class="empty">${allBiz().length ? 'Nothing matches your search or filters.' : 'No businesses loaded yet. Go to Setup and tap "Load businesses".'}</div>`;
+  }).join('') + (list.length > listLimit ? `<button class="showmore" id="moreBtn">Show more (${list.length - listLimit} left)</button>` : '')
+    : `<div class="empty">${allBiz().length ? '<b>No matches</b>Try a different search, or clear your filters.' : '<b>No businesses yet</b>Open Settings and tap "Load businesses".'}</div>`;
 }
 $('#list').addEventListener('click', e => {
   if (e.target.id === 'moreBtn') { listLimit += 100; renderList(); return; }
@@ -807,7 +811,7 @@ function renderFollow() {
   for (const [name, list, warn] of groups) if (list.length) h += `<h2 class="sec ${warn ? 'warn' : ''}">${name} (${list.length})</h2>` + list.map(x => item(x, fmtDate(x.r.followUp))).join('');
   if (soon.length) h += `<h2 class="sec">Contracts ending in the next 6 months (${soon.length})</h2>` + soon.map(x => item(x, esc(x.r.provider || '') + '<br>' + x.end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))).join('');
   h += permitsListHtml();
-  $('#follow').innerHTML = planHtml() + (h || '<div class="empty">No follow-ups yet.<br>When you log a visit, tap a follow-up date and it shows up here.</div>');
+  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts and new permits.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>');
   const due = groups[0][1].length + groups[1][1].length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
 }
@@ -1034,11 +1038,11 @@ function openPermit(id, fly) {
   current = null; currentPermit = id;
   const nav = p.lat != null ? 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lon : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(p.addr + ' ' + (p.city || '') + ' AZ');
   const row = (k, v) => v ? `<div class="brow"><span class="l" style="width:92px;color:#64748b">${k}</span><span style="flex:1">${esc(v)}</span></div>` : '';
-  $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close">✕</button></div>
-   <div class="meta"><span class="pill" style="background:#fdba74">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
+  $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close" aria-label="Close">${ICON('x')}</button></div>
+   <div class="meta"><span class="pill" style="--c:#f97316">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
    ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', p.value)}${row('Owner', p.owner)}${row('Contractor', p.contractor)}${row('GC phone', p.cphone)}${row('GC email', p.cemail)}${row('Parcel', p.parcel)}
    ${p.lat == null ? '<p class="small">Not on the map yet' + (p.geoFail ? ': the address lookup came up empty. Tap Directions to find it in Google Maps.' : '.') + '</p>' : p.approx ? '<p class="small">Pin is on the right street but the exact spot is a guess.</p>' : ''}
-   <div class="actions"><a href="${nav}" target="_blank" rel="noopener">Directions</a><a href="https://www.google.com/search?q=${encodeURIComponent((p.contractor || p.owner || p.addr) + ' ' + (p.city || 'AZ'))}" target="_blank" rel="noopener">Google it</a></div>
+   <div class="actions"><a href="${nav}" target="_blank" rel="noopener">${ICON('nav')}Directions</a>${p.cphone ? `<a href="tel:${esc(p.cphone.replace(/[^\d+]/g, '').slice(0, 11))}">${ICON('phone')}Call GC</a>` : ''}<a href="https://www.google.com/search?q=${encodeURIComponent((p.contractor || p.owner || p.addr) + ' ' + (p.city || 'AZ'))}" target="_blank" rel="noopener">${ICON('search')}Google</a></div>
    <p class="small">Something's being built or remodeled here. Stop by while it's under construction and ask who's handling security, cameras, access control and fire.</p>
    <button class="btn block primary" data-pact="convert">Turn into a prospect</button>
    <button class="btn block ghost" data-pact="dismiss">Not worth it, hide this permit</button>`;
@@ -1104,15 +1108,15 @@ function renderStats() {
     <div class="kpi"><b>${soldM.n}</b><span>Sold this month</span></div><div class="kpi"><b>${money(soldM.inst)}</b><span>Install this month</span></div><div class="kpi"><b>${money(soldM.mon)}</b><span>Monthly added</span></div></div>
     <div class="kpis" style="margin-top:8px"><div class="kpi"><b>${pipe.n}</b><span>Open deals</span></div><div class="kpi"><b>${money(pipe.inst)}</b><span>Install in pipeline</span></div><div class="kpi"><b>${money(pipe.mon)}</b><span>Monthly in pipeline</span></div></div>
     <p class="small" style="margin-bottom:0">All time sold: ${soldAll.n} · ${money(soldAll.inst)} install · ${money(soldAll.mon)}/mo. Add $ on any deal from its Deal box.</p></div>`;
-  let h = `<div class="card"><h3>Today</h3><div class="kpis">
+  let h = `<div class="page-title">Stats</div><div class="page-sub">How your prospecting is going. Updates as you log visits.</div><div class="card"><h3>Today</h3><div class="kpis">
     <div class="kpi"><b>${tv.length}</b><span>Doors</span></div><div class="kpi"><b>${convos(tv)}</b><span>DM convos</span></div><div class="kpi"><b>${appts(tv)}</b><span>Appts</span></div></div></div>
    <div class="card"><h3>This week</h3><div class="kpis">
     <div class="kpi"><b>${wv.length}</b><span>Doors</span></div><div class="kpi"><b>${pct(convos(wv), wv.length)}</b><span>Reach DM</span></div><div class="kpi"><b>${appts(wv)} / ${sold(wv)}</b><span>Appts / Sold</span></div></div></div>
    ${dealCard}
    <div class="card"><h3>Doors per day, last 2 weeks</h3><div class="bars">${perDay.map((n, i) => `<div class="b"><em>${n || ''}</em><i style="height:${n / max * 80}%"></i>${new Date(days[i] + 'T12:00').toLocaleDateString(undefined, { weekday: 'narrow' })}</div>`).join('')}</div></div>
    <div class="card"><h3>All visits by outcome (${visits.length})</h3>${STATUSES.filter(s => s.k !== 'new').map(s => { const n = mix[s.k] || 0; return `<div class="brow"><span class="l">${s.label}</span><span class="t"><i style="width:${visits.length ? n / visits.length * 100 : 0}%;background:${s.color}"></i></span><span class="n">${n}</span></div>`; }).join('')}</div>
-   <div class="card"><h3>Reach-a-DM rate by business type</h3>${Object.keys(cat).length ? Object.entries(cat).sort((a, b) => b[1].n - a[1].n).map(([k, c]) => `<div class="brow"><span class="l">${esc(k)}</span><span class="t"><i style="width:${c.c / c.n * 100}%;background:#4b8ff7"></i></span><span class="n">${c.c}/${c.n}</span></div>`).join('') : '<div class="small">Shows up once you start logging.</div>'}</div>
-   <div class="card"><h3>Territory coverage</h3>${Object.entries(z).sort().map(([k, c]) => `<div class="brow"><span class="l">${esc(k)} ${esc(c.city || '')}</span><span class="t"><i style="width:${c.v / c.n * 100}%;background:#22b357"></i></span><span class="n">${c.v}/${c.n}</span></div>`).join('') || '<div class="small">Load businesses in Setup first.</div>'}</div>`;
+   <div class="card"><h3>Reach-a-DM rate by business type</h3>${Object.keys(cat).length ? Object.entries(cat).sort((a, b) => b[1].n - a[1].n).map(([k, c]) => `<div class="brow"><span class="l">${esc(k)}</span><span class="t"><i style="width:${c.c / c.n * 100}%;background:var(--brand)"></i></span><span class="n">${c.c}/${c.n}</span></div>`).join('') : '<div class="small">Shows up once you start logging.</div>'}</div>
+   <div class="card"><h3>Territory coverage</h3>${Object.entries(z).sort().map(([k, c]) => `<div class="brow"><span class="l">${esc(k)} ${esc(c.city || '')}</span><span class="t"><i style="width:${c.v / c.n * 100}%;background:var(--ok)"></i></span><span class="n">${c.v}/${c.n}</span></div>`).join('') || '<div class="small">Load businesses in Settings first.</div>'}</div>`;
   $('#stats').innerHTML = h;
 }
 
@@ -1120,7 +1124,8 @@ function renderStats() {
 function renderSettings() {
   const cnt = BIZ.length, cust = Object.keys(state.custom).length, hid = Object.keys(state.hidden).length;
   $('#settings').innerHTML = `
-  <div class="card"><h3>1. Businesses</h3>
+  <div class="page-title">Settings</div><div class="page-sub">Set up once, then forget about it. <a href="#" id="helpLink">How this app works</a></div>
+  <div class="card"><h3><span class="step ${cnt ? 'done' : ''}">${cnt ? '✓' : '1'}</span>Businesses</h3>
     <p class="small">${cnt ? `${cnt} businesses from OpenStreetMap, last pulled ${fmtWhen(bizFetchedAt)}. ${cust} you added. ${hid} hidden.` : 'Nothing loaded yet. Tap the button to pull every business in your zips from OpenStreetMap. Free.'}</p>
     ${loadStatus.running ? '<button class="btn block primary" disabled>Loading… keep this screen open</button>'
       : zipsLeft() ? `<button class="btn block primary" id="loadBiz">${cnt ? `Finish loading (${zipsLeft()} zips left)` : 'Load businesses'}</button>`
@@ -1128,7 +1133,7 @@ function renderSettings() {
     <div id="loadMsg" class="small" style="${loadStatus.err ? 'color:#e5484d' : ''}">${esc(loadStatus.msg)}</div>
     <p class="small">Loading saves after each zip, so if it stops you can pick up where it left off. Refreshing keeps all your knocks and notes.</p>
   </div>
-  <div class="card"><h3>2. Cloud backup (GitHub)</h3>
+  <div class="card"><h3><span class="step ${settings.lastSync ? 'done' : ''}">${settings.lastSync ? '✓' : '2'}</span>Cloud backup</h3>
     <p class="small">Saves your knocks to your private <b>knock-data</b> repo so nothing is lost if your phone dies, and so they show up on any device.</p>
     <div class="field"><label>GitHub username</label><input id="sOwner" value="${esc(settings.owner || '')}" autocapitalize="off" autocorrect="off"></div>
     <div class="field"><label>Data repo</label><input id="sRepo" value="${esc(settings.repo || 'knock-data')}" autocapitalize="off" autocorrect="off"></div>
@@ -1136,14 +1141,14 @@ function renderSettings() {
     <button class="btn block primary" id="saveSync">Save &amp; sync now</button>
     <p class="small">${settings.lastSync ? 'Last synced ' + fmtWhen(settings.lastSync) : 'Not synced yet.'} ${settings.lastSyncErr && !syncReady() ? '' : ''}</p>
   </div>
-  <div class="card"><h3>3. Permits (new construction)</h3>
+  <div class="card"><h3><span class="step ${Object.keys(state.permits || {}).length ? 'done' : ''}">${Object.keys(state.permits || {}).length ? '✓' : '3'}</span>Permits (new construction)</h3>
     <p class="small">Each week, download the county's permit spreadsheet from <a href="https://www.maricopa.gov/Archive.aspx?AMID=128" target="_blank" rel="noopener">maricopa.gov weekly permit reports</a> (covers Sun City and Sun City West), or any permit list you get from a city, and drop it here. It keeps the ones in your zips and puts them on the map as orange pins.</p>
     <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="pmCom" checked style="width:22px;height:22px"> Commercial only (skip pools, patios, re-roofs)</label>
     <label class="btn block primary" style="text-align:center">Import permit spreadsheet<input type="file" id="pmFile" accept=".xlsx,.xls,.csv" hidden></label>
     <div id="pmMsg" class="small" style="${permitMsg.err ? 'color:#e5484d' : ''}">${esc(permitMsg.text)}</div><div id="pmGeo" class="small"></div>
     <p class="small">${Object.keys(state.permits || {}).length} permits saved · ${livePermits().length} new · ${Object.values(state.permits || {}).filter(p => p.status === 'new' && p.lat == null && !p.geoFail).length} still being placed on the map</p>
   </div>
-  <div class="card"><h3>Your own fields</h3>
+  <div class="card"><h3>Custom fields</h3>
     <p class="small">Add anything you want to track on every business. It shows up under Details.</p>
     ${(state.fields || []).map(f => `<div class="brow"><span style="flex:1">${esc(f.name)} <span class="small">(${f.type}${f.options ? ': ' + f.options.map(esc).join(', ') : ''})</span></span><button class="chip" data-delf="${f.id}">Remove</button></div>`).join('') || '<p class="small">None yet.</p>'}
     <div class="two"><div class="field"><label>Field name</label><input id="fName" placeholder="e.g. # of locations"></div>
@@ -1169,11 +1174,12 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v10</p>`;
+  <p class="footer-note">Knock Map v11 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
+  if (t.id === 'helpLink') { e.preventDefault(); showHelp(); return; }
   if (t.id === 'loadBiz') loadBusinesses(false);
   if (t.id === 'refreshBiz') loadBusinesses(true);
   if (t.id === 'saveSync') {
@@ -1253,6 +1259,22 @@ $('#filterBtn').onclick = () => {
 };
 let st; $('#search').addEventListener('input', e => { clearTimeout(st); st = setTimeout(() => { filters.q = e.target.value; listLimit = 100; refreshAll(); if (filters.q && $('#view-map').classList.contains('active')) switchView('list'); }, 250); });
 
+// ---------- help ----------
+function showHelp() {
+  showModal(`<div class="help"><h3>How Knock Map works</h3>
+   <p>A map of every business in the territory. Walk in, tap the pin, tap what happened. That's it.</p>
+   <h4>Pin colors</h4>
+   <ul class="plain">${STATUSES.map(s => `<li><span class="pill" style="--c:${s.color}">${s.label}</span> ${s.hint}</li>`).join('')}<li><span class="pill" style="--c:#f97316">Permit</span> Something's being built or remodeled</li></ul>
+   <h4>At the door</h4>
+   <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, fill in the decision maker, or <b>Scan a business card</b> to fill it in for you.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
+   <h4>Planning</h4>
+   <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li></ul>
+   <h4>Good to know</h4>
+   <ul><li>Booted somewhere? The pin fades and it's left out of plans for 60 days (change it in Settings → More).</li><li>Business missing from the map? Tap <b>+</b> on the map to add it.</li><li>The cloud icon at the top turns green when everything is backed up. Your data shows up on every device you connect.</li><li>Add it to your home screen so it opens like an app.</li></ul>
+   <button class="btn block primary" id="helpClose">Got it</button></div>`);
+  $('#helpClose').onclick = hideModal;
+}
+
 // ---------- modal / toast ----------
 function showModal(html) { $('#modalBody').innerHTML = html; $('#modal').classList.remove('hidden'); }
 function hideModal() { $('#modal').classList.add('hidden'); }
@@ -1315,7 +1337,9 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   if (syncReady()) sync();
   if (!settings.geoRetry9) { settings.geoRetry9 = true; for (const p of Object.values(state.permits || {})) if (p.geoFail) { p.geoFail = false; p.updatedAt = Date.now(); } }
   setTimeout(() => { if (Object.values(state.permits || {}).some(p => p.status === 'new' && p.lat == null && !p.geoFail)) geocodePermits(); }, 5000);
-  if (!BIZ.length) { switchView('settings'); toast('Start here: tap "Load businesses"'); }
+  if (!BIZ.length) switchView('settings');
+  if (!settings.seenHelp) { settings.seenHelp = true; saveLocalSoon(); setTimeout(showHelp, 600); }
+  else if (!BIZ.length) toast('Start here: tap "Load businesses"');
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   window.__km = { get state() { return state; }, get BIZ() { return BIZ; }, logOutcome, openBiz, sync, mergeInto, zipOf, loadBusinesses };
 })();
