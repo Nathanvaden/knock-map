@@ -60,7 +60,7 @@ let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', pl
 let lastUndo = null;
 let dirty = false;
 
-const APP_VER = 26;
+const APP_VER = 27;
 function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, customers: {}, leases: {}, plan: null, prefs: {}, updatedAt: 0 }; }
 
 const $ = s => document.querySelector(s);
@@ -372,7 +372,7 @@ let map, renderer, markers = new Map(), meMarker, meCircle, zipLayer, baseStreet
 function renderLegend() {
   const el = $('#legend'); if (!el) return;
   const open = settings.legendOpen !== false;
-  el.innerHTML = open ? `<button class="lg-x" id="lgToggle" aria-label="Hide key">Key ▾</button>${STATUSES.map(s => `<div><i style="background:${s.color}"></i>${s.label}</div>`).join('')}<div><i style="background:#f97316;border:2px solid #fff;box-shadow:0 0 0 1px #f97316"></i>Permit</div><div><i style="background:#ef5b5f;opacity:.3"></i>Cooling off</div><div><i style="background:#fff;border:2px solid #ee2e24"></i>Bay Alarm customer</div><div><i style="background:#0891b2;border-radius:3px"></i>For lease</div><div><i style="background:#eab308;border-radius:3px"></i>Construction site</div>` : '<button class="lg-x" id="lgToggle">Key ▸</button>';
+  el.innerHTML = open ? `<button class="lg-x" id="lgToggle" aria-label="Hide key">Key ▾</button>${STATUSES.map(s => `<div><i style="background:${s.color}${s.k === 'quote' ? ';border:2px solid #fff;box-shadow:0 0 0 1px ' + s.color : ''}"></i>${s.label}</div>`).join('')}<div><i style="background:#f97316;border:2px solid #fff;box-shadow:0 0 0 1px #f97316"></i>Permit</div><div><i style="background:#ef5b5f;opacity:.3"></i>Cooling off</div><div><i style="background:#fff;border:2px solid #ee2e24"></i>Bay Alarm customer</div><div><i style="background:#0891b2;border-radius:3px"></i>For lease</div><div><i style="background:#eab308;border-radius:3px"></i>Construction site</div>` : '<button class="lg-x" id="lgToggle">Key ▸</button>';
   $('#lgToggle').onclick = () => { settings.legendOpen = !open; saveLocalSoon(); renderLegend(); };
 }
 function initMap() {
@@ -397,16 +397,19 @@ function drawMarkers() {
   const list = filtered();
   const ids = new Set(list.map(b => b.id));
   for (const [id, m] of markers) if (!ids.has(id)) { map.removeLayer(m); markers.delete(id); }
-  const r = radiusForZoom();
+  const r = radiusForZoom(); const hotPins = [];
   for (const b of list) {
     const st = statusOf(b.id), col = S[st].color;
     const cool = inCooldown(b.id);
     const cust = custByBiz.has(b.id);
-    const style = { radius: id_is(b.id) ? r + 4 : cust ? r + 1 : r, fillColor: cust && st === 'new' ? '#ffffff' : col, color: id_is(b.id) ? '#0f172a' : cust ? '#ee2e24' : cool ? 'rgba(15,23,42,.2)' : 'rgba(15,23,42,.55)', weight: id_is(b.id) ? 3 : cust ? 3 : 1, fillOpacity: cool ? 0.25 : 0.95, renderer };
+    const hot = st === 'quote'; // quotes to build stand out like permits
+    const style = { radius: id_is(b.id) ? r + 5 : hot ? r + 3 : cust ? r + 1 : r, fillColor: cust && st === 'new' ? '#ffffff' : col, color: id_is(b.id) ? '#0f172a' : hot ? '#fff' : cust ? '#ee2e24' : cool ? 'rgba(15,23,42,.2)' : 'rgba(15,23,42,.55)', weight: id_is(b.id) ? 3 : hot ? 3 : cust ? 3 : 1, fillOpacity: cool ? 0.25 : hot ? 1 : 0.95, renderer };
     let m = markers.get(b.id);
     if (!m) { m = L.circleMarker([b.lat, b.lon], style).addTo(map); m.on('click', () => openBiz(b.id)); markers.set(b.id, m); }
     else { m.setStyle(style); m.setRadius(style.radius); m.setLatLng([b.lat, b.lon]); }
+    if (hot) hotPins.push(m);
   }
+  hotPins.forEach(m => m.bringToFront());
   drawPermits();
   drawLeases();
   labeled.forEach(id => { if (!markers.has(id)) labeled.delete(id); });
@@ -1920,7 +1923,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v26 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v27 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
