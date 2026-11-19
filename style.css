@@ -130,3 +130,17 @@ details[open] summary::after{content:"▴"}
 a.chip{text-decoration:none;color:var(--ink)}
 .pnum{width:26px;height:26px;border-radius:50%;background:#0f172a;color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
 #follow .card .item{background:transparent}
+/* pin names */
+.pinlabel{background:rgba(255,255,255,.92);border:0;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.25);color:#0f172a;font-size:11px;font-weight:600;padding:1px 6px}
+.pinlabel::before{display:none}
+.pinlabel.faded{opacity:.5}
+/* color key */
+#legend{position:absolute;left:10px;bottom:22px;z-index:500;background:rgba(255,255,255,.95);border-radius:10px;padding:6px 10px 8px;font-size:12px;box-shadow:0 1px 6px rgba(0,0,0,.2);line-height:1.6}
+#legend div{display:flex;align-items:center;gap:6px}
+#legend i{display:inline-block;width:10px;height:10px;border-radius:50%;border:1px solid rgba(15,23,42,.4)}
+.lg-x{background:none;border:0;padding:2px 0;font-weight:700;font-size:12px;color:#0f172a}
+/* more settings */
+details.card.more{padding:0 14px}
+details.card.more>summary{padding:14px 0}
+.sub-card{border-top:1px solid var(--line);padding:12px 0}
+.sub-card h3{font-size:15px;margin:0 0 8px}

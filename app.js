@@ -343,6 +343,12 @@ async function commit() { await saveLocal(); scheduleSync(); refreshAll(); }
 
 // ---------- map ----------
 let map, renderer, markers = new Map(), meMarker, meCircle, zipLayer, baseStreet, baseSat, followMe = false;
+function renderLegend() {
+  const el = $('#legend'); if (!el) return;
+  const open = settings.legendOpen !== false;
+  el.innerHTML = open ? `<button class="lg-x" id="lgToggle" aria-label="Hide key">Key ▾</button>${STATUSES.map(s => `<div><i style="background:${s.color}"></i>${s.label}</div>`).join('')}<div><i style="background:#f97316;border:2px solid #fff;box-shadow:0 0 0 1px #f97316"></i>Permit</div><div><i style="background:#ef5b5f;opacity:.3"></i>Cooling off</div>` : '<button class="lg-x" id="lgToggle">Key ▸</button>';
+  $('#lgToggle').onclick = () => { settings.legendOpen = !open; saveLocalSoon(); renderLegend(); };
+}
 function initMap() {
   map = L.map('map', { zoomControl: false, preferCanvas: true, tap: true });
   renderer = L.canvas({ padding: 0.5, tolerance: 8 });
@@ -357,6 +363,7 @@ function initMap() {
   map.on('moveend', () => { const c = map.getCenter(); settings.view = { lat: c.lat, lon: c.lng, z: map.getZoom() }; saveLocalSoon(); updateMapStats(); });
   map.on('dragstart', () => { if (followMe) { followMe = false; $('#locateBtn').classList.remove('on'); } });
   map.on('zoomend', drawMarkers);
+  map.on('moveend', updateLabels);
 }
 let slt; function saveLocalSoon() { clearTimeout(slt); slt = setTimeout(saveLocal, 800); }
 function radiusForZoom() { const z = map.getZoom(); return z >= 17 ? 9 : z >= 15 ? 7 : z >= 13 ? 5 : 3.5; }
@@ -374,9 +381,36 @@ function drawMarkers() {
     else { m.setStyle(style); m.setRadius(style.radius); m.setLatLng([b.lat, b.lon]); }
   }
   drawPermits();
+  labeled.forEach(id => { if (!markers.has(id)) labeled.delete(id); });
+  updateLabels();
   updateMapStats();
 }
 function id_is(id) { return current === id; }
+// Business names next to the pins once you're zoomed in close (only for what's on screen, so it stays fast)
+let labeled = new Set();
+function updateLabels() {
+  if (!map) return;
+  const on = map.getZoom() >= 17, bounds = map.getBounds().pad(0.1), want = new Set();
+  if (on) {
+    // skip names that would overlap one already placed, so dense strip centers stay readable
+    const boxes = [];
+    const cand = [...markers].filter(([, m]) => bounds.contains(m.getLatLng())).map(([id, m]) => ({ id, pt: map.latLngToContainerPoint(m.getLatLng()) }))
+      .sort((x, y) => (x.id === current ? -1 : y.id === current ? 1 : (statusOf(y.id) !== 'new') - (statusOf(x.id) !== 'new')));
+    for (const c of cand) {
+      const b = bizIndex.get(c.id); if (!b) continue;
+      const w = Math.min(26, b.name.length) * 6.2 + 14, box = { x: c.pt.x + 6, y: c.pt.y - 9, w, h: 18 };
+      if (boxes.some(o => box.x < o.x + o.w && o.x < box.x + box.w && box.y < o.y + o.h && o.y < box.y + box.h)) continue;
+      boxes.push(box); want.add(c.id);
+    }
+  }
+  for (const id of labeled) if (!want.has(id)) { const m = markers.get(id); if (m) m.unbindTooltip(); labeled.delete(id); }
+  for (const id of want) {
+    if (labeled.has(id)) continue;
+    const b = bizIndex.get(id); if (!b) continue;
+    markers.get(id).bindTooltip(esc(b.name.length > 26 ? b.name.slice(0, 25) + '…' : b.name), { permanent: true, direction: 'right', offset: [8, 0], className: 'pinlabel' + (inCooldown(id) ? ' faded' : '') });
+    labeled.add(id);
+  }
+}
 function updateMapStats() {
   if (!map) return;
   const bounds = map.getBounds(); let n = 0, v = 0;
@@ -385,6 +419,7 @@ function updateMapStats() {
 }
 
 // ---------- GPS ----------
+let gotFirstFix = false;
 function startGPS() {
   if (!navigator.geolocation) return;
   navigator.geolocation.watchPosition(p => {
@@ -395,6 +430,7 @@ function startGPS() {
       meMarker = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), interactive: false, zIndexOffset: 1000 }).addTo(map);
     } else { meMarker.setLatLng(ll); meCircle.setLatLng(ll); meCircle.setRadius(me.acc); }
     if (followMe) map.panTo(ll);
+    if (!gotFirstFix) { gotFirstFix = true; if (zipOf(me.lat, me.lon) && $('#view-map').classList.contains('active') && !current) map.setView(ll, Math.max(map.getZoom(), 16)); }
     if ($('#view-list').classList.contains('active') && $('#sortSel').value === 'dist') throttleList();
   }, err => { if (err.code === 1) toast('Location is blocked. Allow location for this site in your browser settings.'); }, { enableHighAccuracy: true, maximumAge: 10000, timeout: 30000 });
 }
@@ -450,7 +486,7 @@ function renderSheet(opts = {}) {
     <a href="https://www.google.com/search?q=${encodeURIComponent(b.name + ' ' + (b.city || ''))}" target="_blank" rel="noopener">Google it</a>
   </div>
   <label class="btn block scanbtn">📇 Scan business card<input type="file" accept="image/*" data-scan hidden></label>
-  <div class="small" style="margin-top:6px">Tap what happened. It logs the visit with the time.</div>
+  <div class="small" style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;gap:8px"><span>Tap what happened. It logs the visit with the time.</span>${lastV && ymd(new Date(lastV.t)) === todayStr() ? '<button class="btn primary" data-act="next" style="padding:8px 12px;flex:none">Next closest →</button>' : ''}</div>
   <div class="outcomes">${STATUSES.filter(s => s.k !== 'new').map(s => `<button data-out="${s.k}" style="background:${s.color}${s.k === 'dead' ? ';color:#fff' : ''}" class="${s.k === st ? 'cur' : ''}">${s.label}</button>`).join('')}</div>
   <div class="fu-box"><div class="lbl">Follow-up${r.followUp ? ': <b>' + fmtDate(r.followUp) + '</b>' : ''}</div>
    <div class="chips">
@@ -543,6 +579,20 @@ $('#sheet').addEventListener('click', e => {
     $('#mCancel').onclick = hideModal;
   }
   if (act === 'move') startPlace(id);
+  if (act === 'next') {
+    const b0 = bizIndex.get(id), today = todayStr();
+    let best = null, bd = Infinity;
+    for (const b of filtered()) {
+      if (b.id === id || inCooldown(b.id)) continue;
+      const st = statusOf(b.id), r = rec(b.id);
+      if (st !== 'new' && st !== 'closed') continue;
+      if (r && r.visits && r.visits.length && ymd(new Date(r.visits[r.visits.length - 1].t)) === today) continue;
+      const d = dist(b0.lat, b0.lon, b.lat, b.lon); if (d < bd) { bd = d; best = b; }
+    }
+    if (!best) { toast('Nothing unvisited nearby'); return; }
+    openBiz(best.id); if ($('#view-map').classList.contains('active')) map.setView([best.lat, best.lon], Math.max(map.getZoom(), 17));
+    toast(fmtMi(bd) + ' away');
+  }
   if (t.dataset.photo) showCardPhoto(t.dataset.photo);
 });
 $('#sheet').addEventListener('change', e => {
@@ -1093,16 +1143,6 @@ function renderSettings() {
     <div id="pmMsg" class="small" style="${permitMsg.err ? 'color:#e5484d' : ''}">${esc(permitMsg.text)}</div><div id="pmGeo" class="small"></div>
     <p class="small">${Object.keys(state.permits || {}).length} permits saved · ${livePermits().length} new · ${Object.values(state.permits || {}).filter(p => p.status === 'new' && p.lat == null && !p.geoFail).length} still being placed on the map</p>
   </div>
-  <div class="card"><h3>Cooling off</h3>
-    <p class="small">After someone boots you, their pin fades and they're left out of day plans for this many days.</p>
-    <div class="field"><label>Days</label><input id="cdDays" type="number" inputmode="numeric" value="${cooldownDays()}"></div>
-  </div>
-  <div class="card"><h3>Google details (optional)</h3>
-    <p class="small">With a Google Maps API key, each business gets a button that pulls its phone, hours and address. It only calls Google when you tap it.</p>
-    <div class="field"><label>Google API key</label><input id="sGkey" type="password" value="${esc(settings.gkey || '')}" autocapitalize="off" autocorrect="off"></div>
-    <button class="btn block" id="saveG">Save key</button>
-    ${settings.gcalls ? `<p class="small">Google lookups from this phone: ${settings.gcalls}</p>` : ''}
-  </div>
   <div class="card"><h3>Your own fields</h3>
     <p class="small">Add anything you want to track on every business. It shows up under Details.</p>
     ${(state.fields || []).map(f => `<div class="brow"><span style="flex:1">${esc(f.name)} <span class="small">(${f.type}${f.options ? ': ' + f.options.map(esc).join(', ') : ''})</span></span><button class="chip" data-delf="${f.id}">Remove</button></div>`).join('') || '<p class="small">None yet.</p>'}
@@ -1111,14 +1151,27 @@ function renderSettings() {
     <div class="field hidden" id="fOptsWrap"><label>Choices (comma separated)</label><input id="fOpts" placeholder="Small, Medium, Large"></div>
     <button class="btn block" id="addField">Add field</button>
   </div>
-  <div class="card"><h3>Export</h3>
+  <details class="card more" ${settings.moreOpen ? "open" : ""}><summary><h3 style="display:inline">More settings</h3> <span class="small">cooling off, Google, export, home screen</span></summary>
+  <div class="sub-card"><h3>Cooling off</h3>
+    <p class="small">After someone boots you, their pin fades and they're left out of day plans for this many days.</p>
+    <div class="field"><label>Days</label><input id="cdDays" type="number" inputmode="numeric" value="${cooldownDays()}"></div>
+  </div>
+  <div class="sub-card"><h3>Google details (optional)</h3>
+    <p class="small">With a Google Maps API key, each business gets a button that pulls its phone, hours and address. It only calls Google when you tap it.</p>
+    <div class="field"><label>Google API key</label><input id="sGkey" type="password" value="${esc(settings.gkey || '')}" autocapitalize="off" autocorrect="off"></div>
+    <button class="btn block" id="saveG">Save key</button>
+    ${settings.gcalls ? `<p class="small">Google lookups from this phone: ${settings.gcalls}</p>` : ''}
+  </div>
+  <div class="sub-card"><h3>Export</h3>
     <button class="btn block" id="expCsv">Download spreadsheet (CSV)</button>
     <button class="btn block" id="expJson">Download full backup (JSON)</button>
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
-  <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v9</p>`;
+  <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
+  </details>
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v10</p>`;
 }
+$('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
   if (t.id === 'loadBiz') loadBusinesses(false);
@@ -1256,7 +1309,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
     bizZips = (await kv.get('bizZips')) || {};
   } catch (e) { console.warn('storage unavailable', e); }
   applyMoves(); reindex();
-  initMap(); drawMarkers(); renderFollow();
+  initMap(); renderLegend(); drawMarkers(); renderFollow();
   setBadge(syncReady() ? 'ok' : 'off');
   startGPS();
   if (syncReady()) sync();
