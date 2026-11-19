@@ -229,3 +229,4 @@ details.card.more>summary{padding:16px 0}
 .oldver{position:fixed;left:12px;right:12px;bottom:84px;z-index:3000;background:#1c1c1e;color:#fff;border-radius:12px;padding:12px 14px;display:flex;gap:10px;align-items:center;font-size:14px;box-shadow:0 8px 24px rgba(0,0,0,.3)}
 .oldver .btn{white-space:nowrap}
 .gonebox{margin:8px 0}.gonebox summary{padding:10px 16px;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer}
+.outcomes.stage button{padding:10px 12px;font-size:13.5px}
