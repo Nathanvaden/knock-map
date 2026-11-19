@@ -311,6 +311,9 @@ function mergeInto(local, remote) {
   m.fields = (local.fieldsAt || 0) >= (remote.fieldsAt || 0) ? (local.fields || []) : (remote.fields || []);
   m.fieldsAt = Math.max(local.fieldsAt || 0, remote.fieldsAt || 0);
   m.plan = ((local.plan && local.plan.at) || 0) >= ((remote.plan && remote.plan.at) || 0) ? (local.plan || null) : (remote.plan || null);
+  // a cleared plan stays cleared on every device
+  m.planClearedAt = Math.max(local.planClearedAt || 0, remote.planClearedAt || 0);
+  if (m.plan && (m.plan.at || 0) <= m.planClearedAt) m.plan = null;
   m.prefs = ((local.prefs || {}).at || 0) >= ((remote.prefs || {}).at || 0) ? (local.prefs || {}) : (remote.prefs || {});
   m.updatedAt = Math.max(local.updatedAt || 0, remote.updatedAt || 0);
   return m;
@@ -1068,7 +1071,7 @@ function renderFollow() {
 $('#follow').addEventListener('click', e => {
   const t = e.target;
   if (t.id === 'planBtn' || t.id === 'planNew') return openPlanModal();
-  if (t.id === 'planClear') { state.plan = null; filters.planOnly = false; state.updatedAt = Date.now(); $('#filterDot').classList.toggle('hidden', !filterActive()); commit(); renderFollow(); toast('Plan cleared'); return; }
+  if (t.id === 'planClear') { state.plan = null; state.planClearedAt = Date.now(); filters.planOnly = false; state.updatedAt = Date.now(); $('#filterDot').classList.toggle('hidden', !filterActive()); commit(); renderFollow(); toast('Plan cleared'); return; }
   if (t.id === 'planMap') {
     filters.planOnly = !filters.planOnly; $('#filterDot').classList.toggle('hidden', !filterActive());
     if (filters.planOnly) { switchView('map'); const pts = state.plan.ids.map(id => bizIndex.get(id)).filter(Boolean).map(b => [b.lat, b.lon]); if (pts.length) map.fitBounds(pts, { padding: [40, 40] }); }
@@ -1900,7 +1903,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v24 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v25 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
