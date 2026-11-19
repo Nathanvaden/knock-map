@@ -515,6 +515,8 @@ function renderSheet(opts = {}) {
    <div class="field"><label>Notes</label><textarea data-f="notes" placeholder="Pain points, best time to come back, who to ask for…">${esc(r.notes || '')}</textarea></div>
    <datalist id="provList">${PROVIDERS.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
   </details>`;
+  // property owner
+  h += r.parcel ? ownerBoxHtml(r) : `<button class="btn block" data-act="owner">Who owns this property?</button>`;
   // google
   if (r.g) {
     h += `<div class="gbox"><b>Google info</b> <span class="small">(${fmtDate(ymd(new Date(r.g.at)))})</span>
@@ -572,6 +574,8 @@ $('#sheet').addEventListener('click', e => {
   const act = t.dataset.act;
   if (act === 'close') closeSheet();
   if (act === 'google') googleLookup(id);
+  if (act === 'owner') lookupOwner(id);
+  if (act === 'ownerOthers') { const p = rec(id).parcel; showOwnerProperties(p.owner, p.mail); }
   if (act === 'hide') {
     const b = bizIndex.get(id);
     showModal(`<h3>${b.id.startsWith('c') ? 'Delete' : 'Remove'} ${esc(b.name)}?</h3><p class="small">${b.id.startsWith('c') ? 'This deletes the business you added and its history.' : 'Use this for places that closed, aren\'t real businesses, or are duplicates. It hides the pin everywhere.'}</p>
@@ -811,7 +815,7 @@ function renderFollow() {
   for (const [name, list, warn] of groups) if (list.length) h += `<h2 class="sec ${warn ? 'warn' : ''}">${name} (${list.length})</h2>` + list.map(x => item(x, fmtDate(x.r.followUp))).join('');
   if (soon.length) h += `<h2 class="sec">Contracts ending in the next 6 months (${soon.length})</h2>` + soon.map(x => item(x, esc(x.r.provider || '') + '<br>' + x.end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))).join('');
   h += permitsListHtml();
-  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts and new permits.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>');
+  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + landlordsHtml();
   const due = groups[0][1].length + groups[1][1].length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
 }
@@ -823,6 +827,8 @@ $('#follow').addEventListener('click', e => {
     if (filters.planOnly) { switchView('map'); const pts = state.plan.ids.map(id => bizIndex.get(id)).filter(Boolean).map(b => [b.lat, b.lon]); if (pts.length) map.fitBounds(pts, { padding: [40, 40] }); }
     refreshAll(); renderFollow(); return;
   }
+  if (t.id === 'llLoad') return loadLandlords();
+  const lg = t.closest('[data-ll-group]'); if (lg) return showLandlordGroup(+lg.dataset.llGroup);
   const pm = t.closest('[data-permit]'); if (pm) return openPermit(pm.dataset.permit, true);
   const it = t.closest('.item'); if (it && it.dataset.id) openBiz(it.dataset.id, { fly: false });
 });
@@ -1072,6 +1078,121 @@ function permitsListHtml() {
     <div class="right">${esc(p.date || '')}${p.value ? '<br>' + esc(p.value) : ''}</div></div>`).join('');
 }
 
+// ---------- property owners (Maricopa County Assessor parcel data, public, free) ----------
+const PARCEL_URL = 'https://services.arcgis.com/ykpntM6e3tHvzKRJ/arcgis/rest/services/Parcel_Data_View/FeatureServer/0/query';
+const PARCEL_FIELDS = 'APNDash,PropertyFullStreetAddress,PropertyCity,PropertyZipCode,OwnerName,OwnerAddressLine1,OwnerAddressLine2,OwnerCity,OwnerState,OwnerZipCode,PropertyUseDescription,ConstructionYear,LotSize_Acre,SaleDate,SalePrice,AssessorWebLink,Latitude_DD,Longitude_DD';
+async function parcelQuery(params) {
+  const body = new URLSearchParams({ f: 'json', returnGeometry: 'false', outFields: PARCEL_FIELDS, ...params });
+  const r = await fetch(PARCEL_URL, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+  if (!r.ok) throw new Error('county data HTTP ' + r.status);
+  const j = await r.json(); if (j.error) throw new Error(j.error.message || 'county data error');
+  return j;
+}
+function cleanParcel(a) {
+  const mail = [a.OwnerAddressLine1, a.OwnerAddressLine2].filter(Boolean).join(', ').replace(/\s+/g, ' ').trim();
+  return { apn: a.APNDash, addr: (a.PropertyFullStreetAddress || '').replace(/\s+/g, ' ').trim(), city: a.PropertyCity, zip: a.PropertyZipCode,
+    owner: (a.OwnerName || '').trim(), mail, mailCity: [a.OwnerCity, a.OwnerState, a.OwnerZipCode].filter(Boolean).join(' '),
+    use: a.PropertyUseDescription || '', built: a.ConstructionYear || '', acres: a.LotSize_Acre ? +(+a.LotSize_Acre).toFixed(2) : '',
+    saleDate: a.SaleDate ? new Date(a.SaleDate).toLocaleDateString(undefined, { month: 'short', year: 'numeric' }) : '', salePrice: a.SalePrice || '',
+    link: a.AssessorWebLink || '', lat: a.Latitude_DD, lon: a.Longitude_DD };
+}
+// "C/O ACME PROPERTY MGMT" style lines name the manager; otherwise the mailing address itself is the lead
+function managerOf(p) {
+  const m = (p.mail || '').match(/\b(?:C\/O|ATTN:?|ATTENTION)\s+(.+)/i);
+  if (m) return m[1].split(',')[0].trim();
+  if (/\b(management|mgmt|property|properties|realty|real estate|partners|asset|holdings)\b/i.test(p.mail)) return p.mail.split(',')[0];
+  return '';
+}
+async function lookupOwner(id) {
+  const b = bizIndex.get(id); toast('Checking county records…');
+  try {
+    const j = await parcelQuery({ where: '1=1', geometry: `${b.lon},${b.lat}`, geometryType: 'esriGeometryPoint', inSR: '4326', spatialRel: 'esriSpatialRelIntersects', distance: '25', units: 'esriSRUnit_Meter', resultRecordCount: '10' });
+    const ps = (j.features || []).map(f => cleanParcel(f.attributes));
+    if (!ps.length) { toast('No parcel found at this pin. Try moving the pin onto the building.'); return; }
+    ps.sort((x, y) => dist(b.lat, b.lon, x.lat, x.lon) - dist(b.lat, b.lon, y.lat, y.lon));
+    const r = touch(id); r.parcel = { ...ps[0], at: Date.now() };
+    commit(); renderSheet({ openOwner: true }); toast('Owner found');
+  } catch (err) { toast('County lookup failed: ' + err.message); }
+}
+function ownerBoxHtml(r) {
+  const p = r.parcel; if (!p) return '';
+  const mgr = managerOf(p);
+  const row = (k, v) => v ? `<div class="brow"><span class="l" style="width:96px;color:var(--muted)">${k}</span><span style="flex:1">${esc(v)}</span></div>` : '';
+  return `<div class="fu-box owner"><div class="lbl">Property owner</div>
+    ${row('Owner', p.owner)}${mgr ? row('Managed by', mgr) : ''}${row('Mailing', [p.mail, p.mailCity].filter(Boolean).join(', '))}
+    ${row('Property', p.use)}${row('Built', p.built)}${row('Last sold', p.saleDate)}${row('Parcel', p.apn)}
+    <div class="chips" style="margin-top:8px"><button class="chip" data-act="ownerOthers">Other properties they own here</button>${p.link ? `<a class="chip" href="${esc(p.link)}" target="_blank" rel="noopener">County record</a>` : ''}<a class="chip" href="https://www.google.com/search?q=${encodeURIComponent((mgr || p.owner) + ' Arizona')}" target="_blank" rel="noopener">Google owner</a></div>
+    <p class="small" style="margin:6px 0 0">From the county assessor. The mailing address is often the property manager's office.</p></div>`;
+}
+function territoryZipList() { return TERRITORY.features.map(f => `'${f.properties.zip}'`).join(','); }
+async function showOwnerProperties(owner, mail) {
+  showModal(`<h3>${esc(owner)}</h3><p class="small" id="opMsg">Looking up their properties…</p><div id="opList"></div><button class="btn block ghost" id="opClose">Close</button>`);
+  $('#opClose').onclick = hideModal;
+  try {
+    const q = s => s.replace(/'/g, "''");
+    const where = `PropertyZipCode IN (${territoryZipList()}) AND (OwnerName = '${q(owner)}'${mail ? ` OR OwnerAddressLine1 = '${q(mail.split(',')[0])}'` : ''})`;
+    const j = await parcelQuery({ where, resultRecordCount: '200', orderByFields: 'PropertyFullStreetAddress' });
+    const ps = (j.features || []).map(f => cleanParcel(f.attributes)).filter(p => p.addr);
+    $('#opMsg').textContent = `${ps.length} propert${ps.length === 1 ? 'y' : 'ies'} in your territory with this owner or mailing address.`;
+    $('#opList').innerHTML = ps.map(p => { const bz = bizAtParcel(p); return `<div class="item" ${bz ? `data-id="${bz.id}"` : `data-ll="${p.lat},${p.lon}"`} style="padding:10px 0">
+      <div class="main"><div class="nm">${esc(bz ? bz.name : p.addr)}</div><div class="sub">${esc(bz ? p.addr + ' · ' : '')}${esc(p.use)}${p.owner !== owner ? ' · ' + esc(p.owner) : ''}</div></div><div class="right">${esc(p.zip || '')}</div></div>`; }).join('');
+    $('#opList').onclick = e => { const it = e.target.closest('.item'); if (!it) return; hideModal(); if (it.dataset.id) openBiz(it.dataset.id, { fly: true }); else { const [la, lo] = it.dataset.ll.split(','); switchView('map'); map.setView([+la, +lo], 18); } };
+  } catch (err) { $('#opMsg').textContent = 'County lookup failed: ' + err.message; }
+}
+function bizAtParcel(p) {
+  if (!p.lat) return null;
+  let best = null, bd = 0.04; // within ~200 ft of the parcel center
+  for (const b of allBiz()) { const d = dist(p.lat, p.lon, b.lat, b.lon); if (d < bd) { bd = d; best = b; } }
+  return best;
+}
+// Top landlords / managers: every commercial parcel in the territory, grouped by mailing address
+let landlordState = { running: false, msg: '' };
+async function loadLandlords() {
+  if (landlordState.running) return; landlordState.running = true; landlordState.msg = 'Pulling commercial parcels from the county…'; renderFollow();
+  try {
+    const all = []; let offset = 0;
+    for (;;) {
+      const j = await parcelQuery({ where: `PropertyZipCode IN (${territoryZipList()}) AND ImprovementLegalClassCode LIKE '1%'`, resultOffset: String(offset), resultRecordCount: '2000', orderByFields: 'OBJECTID' });
+      const fs = (j.features || []).map(f => cleanParcel(f.attributes)); all.push(...fs);
+      landlordState.msg = `Pulled ${all.length} commercial parcels…`; renderFollow();
+      if (!j.exceededTransferLimit || !fs.length) break; offset += fs.length;
+    }
+    const groups = new Map();
+    for (const p of all) {
+      if (!p.owner || /\b(CITY OF|COUNTY|STATE OF|SCHOOL DIST|UNITED STATES|ARIZONA PUBLIC SERVICE|SALT RIVER)\b/i.test(p.owner)) continue;
+      const key = (p.mail || p.owner).toUpperCase().replace(/[^A-Z0-9]/g, '');
+      const g = groups.get(key) || { key, mail: p.mail, mailCity: p.mailCity, mgr: managerOf(p), owners: new Set(), parcels: [] };
+      g.owners.add(p.owner); g.parcels.push(p); groups.set(key, g);
+    }
+    const top = [...groups.values()].filter(g => g.parcels.length >= 2).sort((a, b) => b.parcels.length - a.parcels.length).slice(0, 60)
+      .map(g => ({ key: g.key, mail: g.mail, mailCity: g.mailCity, mgr: g.mgr, owners: [...g.owners].slice(0, 4), count: g.parcels.length, parcels: g.parcels.map(p => ({ addr: p.addr, use: p.use, lat: p.lat, lon: p.lon, owner: p.owner, zip: p.zip })) }));
+    landlordCache = { at: Date.now(), total: all.length, top }; await kv.set('landlords', landlordCache);
+    landlordState.msg = '';
+  } catch (err) { landlordState.msg = 'County lookup failed: ' + err.message; }
+  finally { landlordState.running = false; renderFollow(); }
+}
+let landlordCache = null;
+function landlordsHtml() {
+  const d = landlordCache;
+  return `<div class="card"><h3>Landlords &amp; property managers</h3>
+    <p class="small">Who owns the commercial buildings in your territory, grouped by mailing address (usually the owner's office or their property manager). One manager can open doors to a whole strip center.</p>
+    ${landlordState.msg ? `<p class="small">${esc(landlordState.msg)}</p>` : ''}
+    ${d ? `<p class="small">${d.total} commercial parcels checked ${fmtWhen(d.at)}. Top ${Math.min(d.top.length, 15)} by number of properties:</p>
+      ${d.top.slice(0, 15).map((g, i) => `<div class="item" data-ll-group="${i}" style="padding:10px 0"><span class="pnum" style="background:var(--accent)">${g.count}</span>
+        <div class="main"><div class="nm">${esc(g.mgr || g.owners[0])}</div><div class="sub">${esc([g.mail, g.mailCity].filter(Boolean).join(', '))}${g.owners.length > 1 ? ' · ' + g.owners.length + ' owner names' : ''}</div></div></div>`).join('')}` : ''}
+    <button class="btn block ${d ? '' : 'primary'}" id="llLoad" ${landlordState.running ? 'disabled' : ''}>${d ? 'Refresh' : 'Find the biggest landlords'}</button></div>`;
+}
+function showLandlordGroup(i) {
+  const g = landlordCache.top[i];
+  showModal(`<h3>${esc(g.mgr || g.owners[0])}</h3><p class="small">${esc([g.mail, g.mailCity].filter(Boolean).join(', '))}<br>Owner names: ${g.owners.map(esc).join(', ')}${g.owners.length >= 4 ? '…' : ''}</p>
+    <div class="chips"><a class="chip" href="https://www.google.com/search?q=${encodeURIComponent((g.mgr || g.owners[0]) + ' ' + (g.mailCity || 'Arizona'))}" target="_blank" rel="noopener">Google them</a></div>
+    <h2 class="sec" style="margin-left:0">${g.count} properties in your territory</h2>
+    <div id="lgList">${g.parcels.map((p, k) => { const bz = bizAtParcel(p); return `<div class="item" data-k="${k}" style="padding:10px 0"><div class="main"><div class="nm">${esc(bz ? bz.name : p.addr || 'No street address')}</div><div class="sub">${esc(bz ? p.addr + ' · ' : '')}${esc(p.use)}</div></div><div class="right">${esc(p.zip || '')}</div></div>`; }).join('')}</div>
+    <button class="btn block ghost" id="lgClose">Close</button>`);
+  $('#lgClose').onclick = hideModal;
+  $('#lgList').onclick = e => { const it = e.target.closest('.item'); if (!it) return; const p = g.parcels[+it.dataset.k]; const bz = bizAtParcel(p); hideModal(); if (bz) openBiz(bz.id, { fly: true }); else { switchView('map'); map.setView([p.lat, p.lon], 18); } };
+}
+
 // ---------- stats ----------
 function renderStats() {
   const visits = [];
@@ -1174,7 +1295,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v11 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v12 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -1224,7 +1345,7 @@ function download(name, text, type) {
 }
 function exportCsv() {
   const fields = state.fields || [];
-  const head = ['Name', 'Category', 'Type', 'Address', 'City', 'Zip', 'Status', 'Visits', 'First visit', 'Last visit', 'Follow-up', 'Decision maker', 'Title', 'Phone', 'Email', 'Provider', 'Contract ends', 'Current system', 'Install $', 'Monthly $', ...fields.map(f => f.name), 'Notes', 'Lat', 'Lon'];
+  const head = ['Name', 'Category', 'Type', 'Address', 'City', 'Zip', 'Status', 'Visits', 'First visit', 'Last visit', 'Follow-up', 'Decision maker', 'Title', 'Phone', 'Email', 'Provider', 'Contract ends', 'Current system', 'Install $', 'Monthly $', 'Property owner', 'Owner mailing address', ...fields.map(f => f.name), 'Notes', 'Lat', 'Lon'];
   const q = v => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const rows = [head];
   for (const b of allBiz()) {
@@ -1232,7 +1353,7 @@ function exportCsv() {
     const vs = r.visits || [];
     rows.push([b.name, b.cat, b.type, (r.g && r.g.addr) || b.addr, b.city, b.zip, S[statusOf(b.id)].label, vs.length,
       vs[0] ? new Date(vs[0].t).toLocaleString() : '', vs.length ? new Date(vs[vs.length - 1].t).toLocaleString() : '', r.followUp || '',
-      r.dm, r.dmTitle, r.phone || (r.g && r.g.phone) || b.phone, r.email, r.provider, r.contractEnd, r.currentSystem, r.dealInstall, r.dealMonthly,
+      r.dm, r.dmTitle, r.phone || (r.g && r.g.phone) || b.phone, r.email, r.provider, r.contractEnd, r.currentSystem, r.dealInstall, r.dealMonthly, r.parcel && r.parcel.owner, r.parcel && [r.parcel.mail, r.parcel.mailCity].filter(Boolean).join(', '),
       ...fields.map(f => (r.custom || {})[f.id]), r.notes, b.lat, b.lon]);
   }
   download('knocks-' + todayStr() + '.csv', rows.map(r => r.map(q).join(',')).join('\n'), 'text/csv');
@@ -1268,7 +1389,7 @@ function showHelp() {
    <h4>At the door</h4>
    <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, fill in the decision maker, or <b>Scan a business card</b> to fill it in for you.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
    <h4>Planning</h4>
-   <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li></ul>
+   <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li><li><b>Landlords &amp; property managers</b> (bottom of Plan) lists who owns the most commercial buildings in the territory. On any business, <b>Who owns this property?</b> pulls the owner from county records.</li></ul>
    <h4>Good to know</h4>
    <ul><li>Booted somewhere? The pin fades and it's left out of plans for 60 days (change it in Settings → More).</li><li>Business missing from the map? Tap <b>+</b> on the map to add it.</li><li>The cloud icon at the top turns green when everything is backed up. Your data shows up on every device you connect.</li><li>Add it to your home screen so it opens like an app.</li></ul>
    <button class="btn block primary" id="helpClose">Got it</button></div>`);
@@ -1329,6 +1450,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
     BIZ = (await kv.get('biz')) || [];
     bizFetchedAt = (await kv.get('bizAt')) || 0;
     bizZips = (await kv.get('bizZips')) || {};
+    landlordCache = (await kv.get('landlords')) || null;
   } catch (e) { console.warn('storage unavailable', e); }
   applyMoves(); reindex();
   initMap(); renderLegend(); drawMarkers(); renderFollow();

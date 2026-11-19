@@ -12,7 +12,7 @@ Built for a Bay Alarm commercial territory in the West Valley (El Mirage, Peoria
 |---|---|
 | **Map** | Every business, colored by where it stands. Tap a pin to open it and log a visit. `+` adds a business that's missing. |
 | **Nearby** | The same businesses as a list, closest first. |
-| **Plan** | *Plan my day* builds a route (due follow-ups first, then the closest new doors). Also shows due follow-ups, contracts ending soon and new permits. |
+| **Plan** | *Plan my day* builds a route (due follow-ups first, then the closest new doors). Also shows due follow-ups, contracts ending soon, new permits, and the biggest commercial landlords / property managers in the territory. |
 | **Stats** | Doors per day, how often you reach a decision maker, deals and pipeline dollars, and territory coverage. |
 | **Settings** | One-time setup: load businesses, connect cloud backup, import permit spreadsheets. |
 
@@ -25,7 +25,8 @@ The app also has a built-in guide: **Settings → How this app works**.
 1. Open the link and go to **Settings**.
 2. **Businesses:** tap *Load businesses*. It pulls every business in the territory from OpenStreetMap (free), one zip code at a time.
 3. **Cloud backup:** visits are saved to a private GitHub repo so nothing is lost and every device stays in sync. You need a GitHub account, a private repo (e.g. `knock-data`), and a fine-grained access token with **Contents: Read and write** on that repo only. Enter your username, the repo name and the token, then tap *Save & sync now*. The cloud icon at the top turns green.
-4. **Permits (optional):** download the Maricopa County weekly permit spreadsheet (link is in Settings) or any city's permit list, and import it. Commercial permits in the territory show up as orange pins.
+4. **Property owners:** nothing to set up. *Who owns this property?* on any business, and the landlords list in Plan, read the Maricopa County Assessor's public parcel data.
+5. **Permits (optional):** download the Maricopa County weekly permit spreadsheet (link is in Settings) or any city's permit list, and import it. Commercial permits in the territory show up as orange pins.
 
 ## Where things live
 
