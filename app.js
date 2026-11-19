@@ -53,11 +53,11 @@ let state = blankState();     // synced data (your knocks)
 let settings = {};            // local only (token etc.)
 let me = null;                // {lat, lon, acc}
 let current = null;           // id of business open in sheet
-let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', planOnly: false, permits: true };
+let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', planOnly: false, permits: true, customers: true };
 let lastUndo = null;
 let dirty = false;
 
-function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, plan: null, prefs: {}, updatedAt: 0 }; }
+function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, customers: {}, plan: null, prefs: {}, updatedAt: 0 }; }
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -84,7 +84,7 @@ function allBiz() {
   return out;
 }
 let bizIndex = new Map();
-function reindex() { bizIndex = new Map(allBiz().map(b => [b.id, b])); }
+function reindex() { bizIndex = new Map(allBiz().map(b => [b.id, b])); if (typeof reindexCustomers === 'function') reindexCustomers(); }
 function rec(id) { return state.records[id]; }
 function statusOf(id) { const r = rec(id); return (r && r.status) || 'new'; }
 function cooldownDays() { const p = state.prefs || {}; return p.cooldownDays != null ? +p.cooldownDays : 60; }
@@ -295,7 +295,7 @@ async function pullBizList(force) {
 function mergeInto(local, remote) {
   if (!remote) return local;
   const m = blankState();
-  for (const key of ['records', 'custom', 'permits']) {
+  for (const key of ['records', 'custom', 'permits', 'customers']) {
     const ids = new Set([...Object.keys(local[key] || {}), ...Object.keys(remote[key] || {})]);
     for (const id of ids) {
       const a = (local[key] || {})[id], b = (remote[key] || {})[id];
@@ -350,7 +350,7 @@ let map, renderer, markers = new Map(), meMarker, meCircle, zipLayer, baseStreet
 function renderLegend() {
   const el = $('#legend'); if (!el) return;
   const open = settings.legendOpen !== false;
-  el.innerHTML = open ? `<button class="lg-x" id="lgToggle" aria-label="Hide key">Key ▾</button>${STATUSES.map(s => `<div><i style="background:${s.color}"></i>${s.label}</div>`).join('')}<div><i style="background:#f97316;border:2px solid #fff;box-shadow:0 0 0 1px #f97316"></i>Permit</div><div><i style="background:#ef5b5f;opacity:.3"></i>Cooling off</div>` : '<button class="lg-x" id="lgToggle">Key ▸</button>';
+  el.innerHTML = open ? `<button class="lg-x" id="lgToggle" aria-label="Hide key">Key ▾</button>${STATUSES.map(s => `<div><i style="background:${s.color}"></i>${s.label}</div>`).join('')}<div><i style="background:#f97316;border:2px solid #fff;box-shadow:0 0 0 1px #f97316"></i>Permit</div><div><i style="background:#ef5b5f;opacity:.3"></i>Cooling off</div><div><i style="background:#fff;border:2px solid #ee2e24"></i>Bay Alarm customer</div>` : '<button class="lg-x" id="lgToggle">Key ▸</button>';
   $('#lgToggle').onclick = () => { settings.legendOpen = !open; saveLocalSoon(); renderLegend(); };
 }
 function initMap() {
@@ -379,7 +379,8 @@ function drawMarkers() {
   for (const b of list) {
     const st = statusOf(b.id), col = S[st].color;
     const cool = inCooldown(b.id);
-    const style = { radius: id_is(b.id) ? r + 4 : r, fillColor: col, color: id_is(b.id) ? '#0f172a' : cool ? 'rgba(15,23,42,.2)' : 'rgba(15,23,42,.55)', weight: id_is(b.id) ? 3 : 1, fillOpacity: cool ? 0.25 : 0.95, renderer };
+    const cust = custByBiz.has(b.id);
+    const style = { radius: id_is(b.id) ? r + 4 : cust ? r + 1 : r, fillColor: cust && st === 'new' ? '#ffffff' : col, color: id_is(b.id) ? '#0f172a' : cust ? '#ee2e24' : cool ? 'rgba(15,23,42,.2)' : 'rgba(15,23,42,.55)', weight: id_is(b.id) ? 3 : cust ? 3 : 1, fillOpacity: cool ? 0.25 : 0.95, renderer };
     let m = markers.get(b.id);
     if (!m) { m = L.circleMarker([b.lat, b.lon], style).addTo(map); m.on('click', () => openBiz(b.id)); markers.set(b.id, m); }
     else { m.setStyle(style); m.setRadius(style.radius); m.setLatLng([b.lat, b.lon]); }
@@ -446,6 +447,7 @@ function filtered() {
   const plan = filters.planOnly && state.plan ? new Set(state.plan.ids) : null;
   return allBiz().filter(b => {
     if (plan && !plan.has(b.id)) return false;
+    if (!filters.customers && custByBiz.has(b.id)) return false;
     if (filters.statuses.size && !filters.statuses.has(statusOf(b.id))) return false;
     if (filters.cats.size && !filters.cats.has(b.cat)) return false;
     if (filters.zips.size && !filters.zips.has(b.zip)) return false;
@@ -457,7 +459,7 @@ function filtered() {
     return true;
   });
 }
-function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size || filters.planOnly || !filters.permits; }
+function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size || filters.planOnly || !filters.permits || !filters.customers; }
 
 // ---------- business sheet ----------
 function openBiz(id, opts = {}) {
@@ -483,6 +485,7 @@ function renderSheet(opts = {}) {
    &nbsp;${esc(b.cat)}${b.type ? ' · ' + esc(b.type) : ''}${d ? ' · ' + d : ''}<br>${esc(addr || 'No address on file')} · ${esc(b.zip || '')}
    ${lastV ? '<br>Last visit: ' + fmtWhen(lastV.t) + ' (' + S[lastV.s].label + ')' : ''}
    ${inCooldown(id) ? '<br><b>Cooling off</b> until ' + new Date(inCooldown(id)).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + '. Skipped in day plans till then.' : ''}</div>
+  ${custBoxHtml(id)}
   <div class="actions">
     <a href="${navUrl}" target="_blank" rel="noopener">${ICON('nav')}Directions</a>
     ${phone ? `<a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">${ICON('phone')}Call</a>` : ''}
@@ -591,7 +594,7 @@ $('#sheet').addEventListener('click', e => {
     const b0 = bizIndex.get(id), today = todayStr();
     let best = null, bd = Infinity;
     for (const b of filtered()) {
-      if (b.id === id || inCooldown(b.id)) continue;
+      if (b.id === id || inCooldown(b.id) || custByBiz.has(b.id)) continue;
       const st = statusOf(b.id), r = rec(b.id);
       if (st !== 'new' && st !== 'closed') continue;
       if (r && r.visits && r.visits.length && ymd(new Date(r.visits[r.visits.length - 1].t)) === today) continue;
@@ -772,7 +775,7 @@ function renderList() {
     const st = statusOf(b.id); const lv = r && r.visits && r.visits[r.visits.length - 1];
     return `<div class="item" data-id="${b.id}"><span class="pin" style="background:${S[st].color}"></span>
      <div class="main"><div class="nm">${esc(b.name)}</div><div class="sub">${esc(b.cat)}${b.addr ? ' · ' + esc(b.addr) : ''}${lv ? ' · ' + fmtWhen(lv.t) : ''}</div></div>
-     <div class="right">${d != null ? fmtMi(d) : ''}<br>${S[st].label}</div></div>`;
+     <div class="right">${d != null ? fmtMi(d) : ''}<br>${custByBiz.has(b.id) ? '<b style="color:var(--accent)">Customer</b>' : S[st].label}</div></div>`;
   }).join('') + (list.length > listLimit ? `<button class="showmore" id="moreBtn">Show more (${list.length - listLimit} left)</button>` : '')
     : `<div class="empty">${allBiz().length ? '<b>No matches</b>Try a different search, or clear your filters.' : '<b>No businesses yet</b>Open Settings and tap "Load businesses".'}</div>`;
 }
@@ -843,6 +846,7 @@ function buildPlan(start, n, useFilters) {
     const st = statusOf(b.id), r = rec(b.id);
     if (st === 'sold' || st === 'dead' || inCooldown(b.id)) return false;
     if (isDue(b)) return true;
+    if (custByBiz.has(b.id)) return false;
     if (r && r.visits && r.visits.length && ymd(new Date(r.visits[r.visits.length - 1].t)) === today) return false;
     return st === 'new' || st === 'closed';
   }).map(b => ({ b, d: dist(start.lat, start.lon, b.lat, b.lon), due: isDue(b) }));
@@ -897,6 +901,7 @@ function planHtml() {
 // ---------- permits ----------
 let currentPermit = null;
 let permitMsg = { text: '', err: false };
+let custMsg = '';
 const TERR_CITIES = /\b(peoria|surprise|el mirage|sun city west|sun city|youngtown)\b/i;
 const RES_RE = /\b(residential|single[- ]?family|sfr|sfd|pool|spa|patio|solar|pv|dwelling|duplex|fence|wall|re-?roof|reroof|water heater|mobile home|manufactured|casita|garage conversion|carport|res\b|addition-res)/i;
 const COM_RE = /\b(commercial|tenant|t\.?i\.?\b|retail|office|restaurant|industrial|warehouse|shell|business|church|school|medical|clinic|dental|hotel|storage|bank|store|suite|ste\b|com\b|comm\b|multi-?family|apartment|assembly|mercantile)/i;
@@ -1283,6 +1288,118 @@ async function copyText(text, msg) {
 }
 let logOpen = false;
 
+// ---------- Bay Alarm customers (imported from a company account export) ----------
+// Each site = one business location; it can have several accounts/services.
+const SERVICE_KINDS = [
+  { k: 'burg', label: 'Burglar alarm', re: /BURG|\bBA\b/i },
+  { k: 'fire', label: 'Fire', re: /FIRE|\bFA\b/i },
+  { k: 'cctv', label: 'Cameras', re: /CCTV|EBVM|LVM|VIDEO|CAMERA/i },
+  { k: 'access', label: 'Access control', re: /ACCESS/i },
+];
+let custByBiz = new Map();
+function reindexCustomers() { custByBiz = new Map(); for (const c of Object.values(state.customers || {})) if (c.bizId) custByBiz.set(c.bizId, c); }
+function customerOf(id) { return custByBiz.get(id); }
+function custServices(c) { const v = c.services.map(s => s.venue).join(' '); return SERVICE_KINDS.filter(k => k.re.test(v)); }
+function custGaps(c) { const have = new Set(custServices(c).map(k => k.k)); return SERVICE_KINDS.filter(k => !have.has(k.k)); }
+function streetBase(a) {
+  // "15396 N 83RD AVE 303" -> "15396 N 83RD AVE"; normalizes spacing and common suffixes
+  a = String(a || '').toUpperCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
+  a = a.replace(/^(\d+)\s+(NORTH|SOUTH|EAST|WEST)\b/, (m, n, d) => n + ' ' + d[0]);
+  a = a.replace(/\b(STE|SUITE|UNIT|BLDG|SPC|SPACE|APT)\b.*$/, '').trim();
+  const m = a.match(/^(\d+\s+(?:[NSEW]\s+)?.*?\b(AVE|AVENUE|RD|ROAD|ST|STREET|DR|DRIVE|BLVD|LN|LANE|WAY|PKWY|PKW|PARKWAY|CT|PL|CIR|TRL|HWY|LOOP)\b)/);
+  return (m ? m[1] : a).replace(/\bAVENUE\b/, 'AVE').replace(/\bROAD\b/, 'RD').replace(/\bSTREET\b/, 'ST').replace(/\bDRIVE\b/, 'DR').replace(/\bLANE\b/, 'LN').replace(/\b(PARKWAY|PKW)\b/, 'PKWY');
+}
+const NAME_STOP = new Set(['THE', 'LLC', 'INC', 'CO', 'AND', 'OF', 'AZ', 'ARIZONA', 'CORP', 'CENTER', 'STORE', 'GROUP']);
+function nameTokens(n) { return new Set(String(n || '').toUpperCase().replace(/[^A-Z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length >= 3 && !NAME_STOP.has(w))); }
+function nameOverlap(a, b) { const A = nameTokens(a), B = nameTokens(b); let n = 0; for (const w of A) if (B.has(w) || [...B].some(x => x.startsWith(w) || w.startsWith(x))) n++; return n; }
+async function importCustomers(file, includeRes) {
+  await loadSheetJS();
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' });
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { header: 1, defval: '', raw: false });
+  let hi = rows.findIndex(r => r.some(c => /^name$/i.test(String(c).trim())) && r.some(c => /address/i.test(String(c))));
+  if (hi < 0) throw new Error('no NAME and ADDRESS columns found');
+  const H = rows[hi].map(c => String(c).trim().toLowerCase());
+  const col = k => H.findIndex(h => k.test(h));
+  const C = { acct: col(/^acct|account/), name: col(/^name$|company/), venue: col(/venue|service|type/), key: col(/^key$|class|segment/), msr: col(/msr|monthly|rmr|amount/), addr: col(/address/), city: col(/city/), zip: col(/zip/) };
+  const g = (r, k) => C[k] >= 0 ? String(r[C[k]] || '').trim() : '';
+  const myZips = new Set(TERRITORY.features.map(f => f.properties.zip));
+  let read = 0, skippedRes = 0, skippedArea = 0;
+  const sites = new Map();
+  for (const r of rows.slice(hi + 1)) {
+    const name = g(r, 'name'), addr = g(r, 'addr'); if (!name || !addr) continue;
+    read++;
+    const kind = g(r, 'key').toUpperCase();
+    if (!includeRes && /^(RES|EMP)$/.test(kind)) { skippedRes++; continue; }
+    const zip = g(r, 'zip').slice(0, 5); if (zip && !myZips.has(zip)) { skippedArea++; continue; }
+    const base = streetBase(addr);
+    // same building + similar name = same site (names are cut off at ~22 characters in the export)
+    const key = base + '|' + [...nameTokens(name)].slice(0, 2).join(' ');
+    const site = sites.get(key) || { id: 'k' + key.replace(/[^A-Z0-9]/g, '').slice(0, 40), name, addr: base, suites: new Set(), city: g(r, 'city'), zip, kind, services: [] };
+    const suite = addr.toUpperCase().replace(/\s+/g, ' ').trim().slice(base.length).trim(); if (suite) site.suites.add(suite);
+    const msr = parseFloat(g(r, 'msr').replace(/[^0-9.]/g, '')) || 0;
+    site.services.push({ acct: g(r, 'acct'), venue: g(r, 'venue'), msr });
+    if (kind === 'KEY' || (kind === 'COM' && site.kind !== 'KEY')) site.kind = kind;
+    sites.set(key, site);
+  }
+  state.customers = state.customers || {};
+  let added = 0;
+  for (const s of sites.values()) {
+    const old = state.customers[s.id];
+    state.customers[s.id] = { ...(old || {}), id: s.id, name: s.name, addr: s.addr, suites: [...s.suites], city: s.city, zip: s.zip, kind: s.kind,
+      services: s.services, msr: +s.services.reduce((a, x) => a + x.msr, 0).toFixed(2), updatedAt: Date.now() };
+    if (!old) added++;
+  }
+  matchCustomersByAddress();
+  state.updatedAt = Date.now(); reindexCustomers(); await commit();
+  return { read, sites: sites.size, added, skippedRes, skippedArea };
+}
+function matchCustomersByAddress() {
+  const byBase = new Map();
+  for (const b of allBiz()) if (b.addr) { const k = streetBase(b.addr); (byBase.get(k) || byBase.set(k, []).get(k)).push(b); }
+  for (const c of Object.values(state.customers || {})) {
+    if (c.bizId && bizIndex.has(c.bizId)) continue;
+    const cands = byBase.get(c.addr) || [];
+    const hit = cands.find(b => nameOverlap(b.name, c.name) > 0) || (cands.length === 1 ? cands[0] : null);
+    if (hit) { c.bizId = hit.id; c.lat = hit.lat; c.lon = hit.lon; c.updatedAt = Date.now(); }
+  }
+}
+let custGeocoding = false;
+async function placeCustomers(onProgress) {
+  if (custGeocoding) return; custGeocoding = true;
+  try {
+    const todo = Object.values(state.customers || {}).filter(c => !c.bizId && !c.geoFail);
+    for (let i = 0; i < todo.length; i++) {
+      const c = todo[i]; onProgress && onProgress(`Placing customers on the map (${i + 1} of ${todo.length})…`);
+      let hit; try { hit = await geocodeAddress({ addr: c.addr, city: c.city, zip: c.zip }); } catch (e) { break; }
+      const cc = state.customers[c.id]; if (!cc) continue;
+      if (!hit) { cc.geoFail = true; cc.updatedAt = Date.now(); continue; }
+      // a business already on the map nearby with a similar name? link to it. Otherwise add the customer as a business.
+      let best = null, bd = 0.06;
+      for (const b of allBiz()) { const d = dist(hit.lat, hit.lon, b.lat, b.lon); if (d < bd && nameOverlap(b.name, cc.name) > 0) { bd = d; best = b; } }
+      if (best) cc.bizId = best.id;
+      else {
+        const nid = 'c' + Date.now().toString(36) + i; const z = zipOf(hit.lat, hit.lon);
+        state.custom[nid] = { id: nid, name: titleCase(cc.name), cat: 'Other', type: 'Bay Alarm customer', lat: +hit.lat.toFixed(6), lon: +hit.lon.toFixed(6), addr: titleCase(cc.addr), city: titleCase(cc.city || (z ? z.city : '')), zip: cc.zip || (z ? z.zip : ''), phone: '', web: '', hours: '', updatedAt: Date.now() };
+        cc.bizId = nid;
+      }
+      cc.lat = hit.lat; cc.lon = hit.lon; cc.updatedAt = Date.now();
+      if (i % 5 === 4) { reindex(); reindexCustomers(); await saveLocal(); drawMarkers(); }
+      await new Promise(z => setTimeout(z, 1100));
+    }
+    state.updatedAt = Date.now(); reindex(); reindexCustomers(); await commit();
+  } finally { custGeocoding = false; onProgress && onProgress(''); renderSettingsIfOpen(); }
+}
+function titleCase(s) { return String(s || '').toLowerCase().replace(/\b([a-z])/g, m => m.toUpperCase()).replace(/\b(Llc|Inc|Az|Ste|Nw|Ne|Sw|Se)\b/g, m => m.toUpperCase()).replace(/\b(\d+)(St|Nd|Rd|Th)\b/g, (m, a, b) => a + b.toLowerCase()); }
+function custBoxHtml(id) {
+  const c = customerOf(id); if (!c) return '';
+  const gaps = custGaps(c), billingOnly = !c.msr && c.services.every(s => /BILLING/i.test(s.venue));
+  return `<div class="fu-box cust"><div class="lbl" style="display:flex;justify-content:space-between"><span>Bay Alarm customer${c.kind === 'KEY' ? ' · key account' : ''}</span><span>${c.msr ? money(c.msr) + '/mo' : ''}</span></div>
+    ${c.services.map(s => `<div class="brow" style="margin:3px 0"><span style="flex:1">${esc(s.venue)}</span><span class="small">#${esc(s.acct)}</span><span class="n">${s.msr ? '$' + s.msr.toFixed(2) : '–'}</span></div>`).join('')}
+    ${c.suites && c.suites.length ? `<div class="small">Suites: ${c.suites.map(esc).join(', ')}</div>` : ''}
+    ${billingOnly ? '<p class="small" style="margin:6px 0 0"><b>Billing only, $0 monitoring.</b> Could be a win-back.</p>'
+      : gaps.length ? `<p class="small" style="margin:6px 0 0">Not on: <b>${gaps.map(k => k.label).join(', ')}</b>. Upsell chance.</p>` : ''}</div>`;
+}
+
 // ---------- stats ----------
 function renderStats() {
   if (logOpen) return renderLog();
@@ -1364,6 +1481,13 @@ function renderSettings() {
     <div id="pmMsg" class="small" style="${permitMsg.err ? 'color:#e5484d' : ''}">${esc(permitMsg.text)}</div><div id="pmGeo" class="small"></div>
     <p class="small">${Object.keys(state.permits || {}).length} permits saved · ${livePermits().length} new · ${Object.values(state.permits || {}).filter(p => p.status === 'new' && p.lat == null && !p.geoFail).length} still being placed on the map</p>
   </div>
+  <div class="card"><h3>Bay Alarm customers</h3>
+    <p class="small">Import the customer account list (Excel or CSV with name, address, service and monthly amount). Customers get a red ring on the map, show their services and what they don't have yet, and are left out of day plans.</p>
+    <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="cuRes" style="width:22px;height:22px"> Include residential accounts</label>
+    <label class="btn block primary" style="text-align:center">Import customer list<input type="file" id="cuFile" accept=".xlsx,.xls,.csv" hidden></label>
+    <div id="cuMsg" class="small">${esc(custMsg)}</div><div id="cuGeo" class="small"></div>
+    <p class="small">${Object.keys(state.customers || {}).length} customer locations · ${Object.values(state.customers || {}).filter(c => c.bizId).length} on the map${Object.values(state.customers || {}).filter(c => c.geoFail).length ? ' · ' + Object.values(state.customers || {}).filter(c => c.geoFail).length + ' address not found' : ''}</p>
+  </div>
   <div class="card"><h3>Custom fields</h3>
     <p class="small">Add anything you want to track on every business. It shows up under Details.</p>
     ${(state.fields || []).map(f => `<div class="brow"><span style="flex:1">${esc(f.name)} <span class="small">(${f.type}${f.options ? ': ' + f.options.map(esc).join(', ') : ''})</span></span><button class="chip" data-delf="${f.id}">Remove</button></div>`).join('') || '<p class="small">None yet.</p>'}
@@ -1390,7 +1514,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v15 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v16 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -1417,6 +1541,16 @@ $('#settings').addEventListener('click', async e => {
 $('#settings').addEventListener('change', async e => {
   if (e.target.id === 'fType') $('#fOptsWrap').classList.toggle('hidden', e.target.value !== 'choice');
   if (e.target.id === 'cdDays') { state.prefs = { ...(state.prefs || {}), cooldownDays: Math.max(0, +e.target.value || 0), at: Date.now() }; state.updatedAt = Date.now(); commit(); toast('Saved'); }
+  if (e.target.id === 'cuFile') {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const msg = $('#cuMsg'); msg.textContent = 'Reading the list…';
+    try {
+      const r = await importCustomers(f, $('#cuRes').checked);
+      custMsg = `Read ${r.read} accounts → ${r.sites} customer locations (${r.added} new). Skipped ${r.skippedRes} residential${r.skippedArea ? ' and ' + r.skippedArea + ' outside your zips' : ''}.`;
+      msg.textContent = custMsg;
+      placeCustomers(m => { const el = $('#cuGeo'); if (el) el.textContent = m; });
+    } catch (err) { custMsg = 'Could not read that file: ' + err.message; msg.textContent = custMsg; }
+  }
   if (e.target.id === 'pmFile') {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     const msg = $('#pmMsg'); msg.textContent = 'Reading spreadsheet…'; msg.style.color = '';
@@ -1462,13 +1596,13 @@ $('#filterBtn').onclick = () => {
    <h2 class="sec" style="margin-left:0">Status</h2><div class="checkgrid">${STATUSES.map(s => chip(filters.statuses, s.k, s.label, s.color)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Business type</h2><div class="checkgrid">${CATS.map(c => chip(filters.cats, c, c)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Zip</h2><div class="checkgrid">${zips.map(z => chip(filters.zips, z.zip, z.zip + ' ' + z.city)).join('')}</div>
-   <h2 class="sec" style="margin-left:0">Other</h2><div class="checkgrid"><button class="chip ${filters.permits ? 'on' : ''}" data-tog="permits"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f97316;margin-right:5px"></span>Permits</button>${state.plan && state.plan.date === todayStr() ? `<button class="chip ${filters.planOnly ? 'on' : ''}" data-tog="planOnly">Today's plan only</button>` : ''}</div>
+   <h2 class="sec" style="margin-left:0">Other</h2><div class="checkgrid"><button class="chip ${filters.permits ? 'on' : ''}" data-tog="permits"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f97316;margin-right:5px"></span>Permits</button><button class="chip ${filters.customers ? 'on' : ''}" data-tog="customers"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ee2e24;margin-right:5px"></span>Customers</button>${state.plan && state.plan.date === todayStr() ? `<button class="chip ${filters.planOnly ? 'on' : ''}" data-tog="planOnly">Today's plan only</button>` : ''}</div>
    <div class="two" style="margin-top:14px"><button class="btn ghost" id="fClear">Clear all</button><button class="btn primary" id="fDone">Done</button></div>`);
   $('#modalBody').onclick = e => {
     const t = e.target.closest('button'); if (!t) return;
     if (t.dataset.set) { const set = t.dataset.set === 's' ? filters.statuses : t.dataset.set === 'c' ? filters.cats : filters.zips; set.has(t.dataset.val) ? set.delete(t.dataset.val) : set.add(t.dataset.val); t.classList.toggle('on'); }
     if (t.dataset.tog) { filters[t.dataset.tog] = !filters[t.dataset.tog]; t.classList.toggle('on'); }
-    if (t.id === 'fClear') { filters.statuses.clear(); filters.cats.clear(); filters.zips.clear(); filters.planOnly = false; filters.permits = true; $('#modalBody').querySelectorAll('.chip.on').forEach(c => c.classList.remove('on')); const pc = $('#modalBody').querySelector('[data-tog=permits]'); if (pc) pc.classList.add('on'); }
+    if (t.id === 'fClear') { filters.statuses.clear(); filters.cats.clear(); filters.zips.clear(); filters.planOnly = false; filters.permits = true; filters.customers = true; $('#modalBody').querySelectorAll('.chip.on').forEach(c => c.classList.remove('on')); const pc = $('#modalBody').querySelector('[data-tog=permits]'); if (pc) pc.classList.add('on'); }
     if (t.id === 'fDone') { hideModal(); $('#modalBody').onclick = null; }
     $('#filterDot').classList.toggle('hidden', !filterActive()); refreshAll();
   };
@@ -1486,7 +1620,7 @@ function showHelp() {
    <h4>Planning</h4>
    <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li><li><b>Landlords &amp; property managers</b> (bottom of Plan) lists who owns the most commercial buildings in the territory. On any business, <b>Who owns this property?</b> pulls the owner from county records.</li></ul>
    <h4>Good to know</h4>
-   <ul><li>Booted somewhere? The pin fades and it's left out of plans for 60 days (change it in Settings → More).</li><li>Business missing from the map? Tap <b>+</b> on the map to add it.</li><li>The cloud icon at the top turns green when everything is backed up. Your data shows up on every device you connect.</li><li><b>Stats → Daily log</b> shows everything you did on a day, with a Copy button for each business so you can paste it into HubSpot.</li><li>Add it to your home screen so it opens like an app.</li></ul>
+   <ul><li>Booted somewhere? The pin fades and it's left out of plans for 60 days (change it in Settings → More).</li><li>A <b>red ring</b> means it's already a Bay Alarm customer. Open it to see their services and what they don't have yet.</li><li>Business missing from the map? Tap <b>+</b> on the map to add it.</li><li>The cloud icon at the top turns green when everything is backed up. Your data shows up on every device you connect.</li><li><b>Stats → Daily log</b> shows everything you did on a day, with a Copy button for each business so you can paste it into HubSpot.</li><li>Add it to your home screen so it opens like an app.</li></ul>
    <button class="btn block primary" id="helpClose">Got it</button></div>`);
   $('#helpClose').onclick = hideModal;
 }
@@ -1553,6 +1687,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   startGPS();
   if (syncReady()) sync();
   if (!settings.geoRetry9) { settings.geoRetry9 = true; for (const p of Object.values(state.permits || {})) if (p.geoFail) { p.geoFail = false; p.updatedAt = Date.now(); } }
+  setTimeout(() => { if (Object.values(state.customers || {}).some(c => !c.bizId && !c.geoFail)) placeCustomers(); }, 7000);
   setTimeout(() => { if (Object.values(state.permits || {}).some(p => p.status === 'new' && p.lat == null && !p.geoFail)) geocodePermits(); }, 5000);
   if (!BIZ.length) switchView('settings');
   if (!settings.seenHelp) { settings.seenHelp = true; saveLocalSoon(); setTimeout(showHelp, 600); }
