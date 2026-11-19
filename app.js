@@ -60,6 +60,7 @@ let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', pl
 let lastUndo = null;
 let dirty = false;
 
+const APP_VER = 26;
 function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, customers: {}, leases: {}, plan: null, prefs: {}, updatedAt: 0 }; }
 
 const $ = s => document.querySelector(s);
@@ -298,7 +299,8 @@ async function pullBizList(force) {
 }
 function mergeInto(local, remote) {
   if (!remote) return local;
-  const m = blankState();
+  const m = Object.assign(blankState(), remote, local); // keep anything a newer version added
+  for (const k of ['records', 'custom', 'permits', 'customers', 'leases']) m[k] = {};
   for (const key of ['records', 'custom', 'permits', 'customers', 'leases']) {
     const ids = new Set([...Object.keys(local[key] || {}), ...Object.keys(remote[key] || {})]);
     for (const id of ids) {
@@ -316,9 +318,21 @@ function mergeInto(local, remote) {
   if (m.plan && (m.plan.at || 0) <= m.planClearedAt) m.plan = null;
   m.prefs = ((local.prefs || {}).at || 0) >= ((remote.prefs || {}).at || 0) ? (local.prefs || {}) : (remote.prefs || {});
   m.updatedAt = Math.max(local.updatedAt || 0, remote.updatedAt || 0);
+  m.appVer = Math.max(APP_VER, local.appVer || 0, remote.appVer || 0);
   return m;
 }
 let syncing = false, syncAgain = false;
+function oldVersion() {
+  // another device saved with a newer version: don't overwrite its data, get this one updated
+  if (document.getElementById('oldVer')) return;
+  const d = document.createElement('div'); d.id = 'oldVer'; d.className = 'oldver';
+  d.innerHTML = 'This device has an older version of Knock Map. <button class="btn primary" id="oldVerGo">Update now</button>';
+  document.body.appendChild(d);
+  d.querySelector('#oldVerGo').onclick = async () => {
+    try { const regs = await navigator.serviceWorker.getRegistrations(); for (const r of regs) await r.unregister(); const ks = await caches.keys(); for (const k of ks) await caches.delete(k); } catch (e) {}
+    location.reload();
+  };
+}
 async function sync(manual) {
   if (!syncReady()) { setBadge('off'); return; }
   if (syncing) { syncAgain = true; return; }
@@ -326,6 +340,7 @@ async function sync(manual) {
   try {
     for (let attempt = 0; attempt < 3; attempt++) {
       const { sha, data } = await pullRemote();
+      if (data && (data.appVer || 0) > APP_VER) { oldVersion(); throw new Error('This device has an old version of the app'); }
       state = mergeInto(state, data);
       const body = JSON.stringify({ message: 'Knock log ' + new Date().toISOString(), content: utf8ToB64(JSON.stringify(state)), ...(sha ? { sha } : {}) });
       const r = await gh(DATA_FILE, { method: 'PUT', body, headers: { 'Content-Type': 'application/json' } });
@@ -1064,7 +1079,7 @@ function renderFollow() {
   for (const [name, list, warn] of groups) if (list.length) h += `<h2 class="sec ${warn ? 'warn' : ''}">${name} (${list.length})</h2>` + list.map(x => item(x, fmtDate(x.r.followUp))).join('');
   if (soon.length) h += `<h2 class="sec">Contracts ending in the next 6 months (${soon.length})</h2>` + soon.map(x => item(x, esc(x.r.provider || '') + '<br>' + x.end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))).join('');
   h += permitsListHtml();
-  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + dealsHtml() + futuresListHtml() + leasesHtml() + landlordsHtml();
+  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Deals in progress, today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + dealsHtml() + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + futuresListHtml() + leasesHtml() + landlordsHtml();
   const due = groups[0][1].length + groups[1][1].length + allFutures().filter(x => x.f.revisit && x.f.revisit <= todayStr()).length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
 }
@@ -1081,6 +1096,7 @@ $('#follow').addEventListener('click', e => {
   if (t.id === 'pmNoise') { settings.showNoisePermits = !settings.showNoisePermits; saveLocal(); renderFollow(); drawMarkers(); return; }
   const lg = t.closest('[data-ll-group]'); if (lg) return showLandlordGroup(+lg.dataset.llGroup);
   const pm = t.closest('[data-permit]'); if (pm) return openPermit(pm.dataset.permit, true);
+  if (t.dataset.unlease) { const l = state.leases[t.dataset.unlease]; l.status = 'active'; l.updatedAt = state.updatedAt = Date.now(); commit(); toast('Pin is back on the map'); return; }
   const ls = t.closest('[data-lease]'); if (ls) { const l = state.leases[ls.dataset.lease]; switchView('map'); map.setView([l.lat, l.lon], 17); return openLease(l.id); }
   const it = t.closest('.item'); if (it && it.dataset.id) openBiz(it.dataset.id, { fly: false });
 });
@@ -1773,7 +1789,8 @@ function leasesHtml() {
       <div class="main"><div class="nm">${esc((kind === 'site' && l.project) || l.addr || SPOT[kind].pill)}</div><div class="sub">${esc([kind === 'site' && l.project ? l.addr : '', l.company, l.phone].filter(Boolean).join(' · ') || 'No phone or company yet')}</div></div>
       <div class="right">${new Date(l.t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div></div>`).join('');
   };
-  return block('site', 'Construction sites') + block('lease', 'For lease');
+  const gone = Object.values(state.leases || {}).filter(l => l.status === 'gone').sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return block('site', 'Construction sites') + block('lease', 'For lease') + (gone.length ? `<details class="gonebox"><summary>Removed pins (${gone.length})</summary>${gone.map(l => `<div class="item"><span class="pin" style="background:${SPOT[l.kind || 'lease'].color};border-radius:3px;opacity:.5"></span><div class="main"><div class="nm">${esc((l.kind === 'site' && l.project) || l.addr || SPOT[l.kind || 'lease'].pill)}</div><div class="sub">${SPOT[l.kind || 'lease'].pill} · removed ${new Date(l.updatedAt || l.t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div></div><button class="chip" data-unlease="${l.id}">Bring back</button></div>`).join('')}</details>` : '');
 }
 function chooseAdd() {
   showModal(`<h3>Add to the map</h3>
@@ -1903,7 +1920,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v25 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v26 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -1985,7 +2002,7 @@ $('#filterBtn').onclick = () => {
    <h2 class="sec" style="margin-left:0">Status</h2><div class="checkgrid">${STATUSES.map(s => chip(filters.statuses, s.k, s.label, s.color)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Business type</h2><div class="checkgrid">${CATS.map(c => chip(filters.cats, c, c)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Zip</h2><div class="checkgrid">${zips.map(z => chip(filters.zips, z.zip, z.zip + ' ' + z.city)).join('')}</div>
-   <h2 class="sec" style="margin-left:0">Other</h2><div class="checkgrid"><button class="chip ${filters.permits ? 'on' : ''}" data-tog="permits"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f97316;margin-right:5px"></span>Permits</button><button class="chip ${filters.customers ? 'on' : ''}" data-tog="sites"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#eab308;margin-right:5px"></span>Construction</button><button class="chip ${filters.leases ? 'on' : ''}" data-tog="leases"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#0891b2;margin-right:5px"></span>For lease</button><button class="chip ${filters.customers ? 'on' : ''}" data-tog="customers"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ee2e24;margin-right:5px"></span>Customers</button>${state.plan && state.plan.date === todayStr() ? `<button class="chip ${filters.planOnly ? 'on' : ''}" data-tog="planOnly">Today's plan only</button>` : ''}</div>
+   <h2 class="sec" style="margin-left:0">Other</h2><div class="checkgrid"><button class="chip ${filters.permits ? 'on' : ''}" data-tog="permits"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f97316;margin-right:5px"></span>Permits</button><button class="chip ${filters.sites ? 'on' : ''}" data-tog="sites"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#eab308;margin-right:5px"></span>Construction</button><button class="chip ${filters.leases ? 'on' : ''}" data-tog="leases"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#0891b2;margin-right:5px"></span>For lease</button><button class="chip ${filters.customers ? 'on' : ''}" data-tog="customers"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ee2e24;margin-right:5px"></span>Customers</button>${state.plan && state.plan.date === todayStr() ? `<button class="chip ${filters.planOnly ? 'on' : ''}" data-tog="planOnly">Today's plan only</button>` : ''}</div>
    <div class="two" style="margin-top:14px"><button class="btn ghost" id="fClear">Clear all</button><button class="btn primary" id="fDone">Done</button></div>`);
   $('#modalBody').onclick = e => {
     const t = e.target.closest('button'); if (!t) return;
