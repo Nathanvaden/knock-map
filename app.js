@@ -898,7 +898,7 @@ async function importPermits(file, commercialOnly) {
       const old = state.permits[id];
       state.permits[id] = { ...(old || {}), id, permit, date: g(row, 'date'), addr, city, zip, type: [g(row, 'type'), g(row, 'work')].filter(Boolean).join(' · '), desc: g(row, 'desc'), value: g(row, 'value'),
         owner: g(row, 'owner'), contractor: g(row, 'contractor'), cphone: g(row, 'cphone'), cemail: g(row, 'cemail'), parcel: g(row, 'parcel'), kind: isRes ? 'residential' : (/commercial/i.test(tcol) || COM_RE.test(text)) ? 'commercial' : 'other',
-        status: (old && old.status) || 'new', importedAt: (old && old.importedAt) || Date.now(), updatedAt: Date.now() };
+        geoFail: false, ...(old && old.geoFail ? { lat: null, lon: null } : {}), status: (old && old.status) || 'new', importedAt: (old && old.importedAt) || Date.now(), updatedAt: Date.now() };
       if (!old) added++;
     }
   }
@@ -906,6 +906,41 @@ async function importPermits(file, commercialOnly) {
   return { added, seen, skippedArea, skippedRes };
 }
 let geocoding = false;
+function jsonp(url, ms) {
+  return new Promise((res, rej) => {
+    const cb = '__geo' + Math.random().toString(36).slice(2); const sc = document.createElement('script');
+    const t = setTimeout(() => { cleanup(); rej(new Error('timeout')); }, ms || 8000);
+    function cleanup() { clearTimeout(t); delete window[cb]; sc.remove(); }
+    window[cb] = d => { cleanup(); res(d); };
+    sc.onerror = () => { cleanup(); rej(new Error('failed')); };
+    sc.src = url + '&callback=' + cb; document.head.appendChild(sc);
+  });
+}
+async function nominatim(params) {
+  const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&' + params, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error('geocoder busy');
+  const j = await r.json(); return j[0] ? { lat: +j[0].lat, lon: +j[0].lon } : null;
+}
+// Tries several free geocoders, most precise first. Returns {lat, lon, approx}.
+async function geocodeAddress(p) {
+  const street = p.addr.split(/\n/)[0].replace(/[,\s]+(ste|suite|unit|bldg|building|#|apt|spc|space)\b.*$/i, '').trim();
+  const city = (p.city || '').trim(), zip = p.zip || '';
+  const enc = encodeURIComponent;
+  let hit = await nominatim(`street=${enc(street)}&city=${enc(city)}&state=AZ&postalcode=${enc(zip)}`);
+  if (hit) return hit;
+  await new Promise(z => setTimeout(z, 1100));
+  try {
+    const d = await jsonp('https://geocoding.geo.census.gov/geocoder/locations/onelineaddress?benchmark=Public_AR_Current&format=jsonp&address=' + enc(`${street}, ${city}, AZ ${zip}`));
+    const m = d && d.result && d.result.addressMatches && d.result.addressMatches[0];
+    if (m) return { lat: m.coordinates.y, lon: m.coordinates.x };
+  } catch (e) { /* census lookup unavailable, keep going */ }
+  hit = await nominatim('q=' + enc(`${street}, ${city}, AZ ${zip}`));
+  if (hit) return hit;
+  await new Promise(z => setTimeout(z, 1100));
+  const roadOnly = street.replace(/^\d+\s+/, '');
+  hit = await nominatim(`street=${enc(roadOnly)}&city=${enc(city)}&state=AZ`);
+  return hit ? { ...hit, approx: true } : null;
+}
 async function geocodePermits(onProgress) {
   if (geocoding) return; geocoding = true;
   try {
@@ -913,19 +948,16 @@ async function geocodePermits(onProgress) {
     for (let i = 0; i < todo.length; i++) {
       const p = todo[i];
       onProgress && onProgress(`Finding permits on the map (${i + 1} of ${todo.length})…`);
-      const q = [p.addr.replace(/\s+(ste|suite|unit|bldg|#)\s*\S+/i, ''), p.city || '', 'AZ', p.zip || ''].filter(Boolean).join(', ');
-      try {
-        const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=' + encodeURIComponent(q), { headers: { Accept: 'application/json' } });
-        const j = await r.json();
-        const pp = state.permits[p.id]; if (!pp) continue;
-        if (j[0]) {
-          const lat = +(+j[0].lat).toFixed(6), lon = +(+j[0].lon).toFixed(6), z = zipOf(lat, lon);
-          pp.lat = lat; pp.lon = lon; if (!z) pp.outside = true; else if (!pp.zip) pp.zip = z.zip;
-        } else pp.geoFail = true;
-        pp.updatedAt = Date.now();
-      } catch (e) { /* offline, try later */ break; }
+      let hit;
+      try { hit = await geocodeAddress(p); } catch (e) { break; /* offline or rate-limited: try again later */ }
+      const pp = state.permits[p.id]; if (!pp) continue;
+      if (hit) {
+        const lat = +hit.lat.toFixed(6), lon = +hit.lon.toFixed(6), z = zipOf(lat, lon);
+        pp.lat = lat; pp.lon = lon; pp.approx = !!hit.approx; if (!z && !hit.approx) pp.outside = true; else if (!pp.zip && z) pp.zip = z.zip;
+      } else pp.geoFail = true;
+      pp.updatedAt = Date.now();
       if (i % 5 === 4) { await saveLocal(); drawMarkers(); }
-      await new Promise(z => setTimeout(z, 1100)); // be polite to the free geocoder
+      await new Promise(z => setTimeout(z, 1100)); // be polite to the free geocoders
     }
     state.updatedAt = Date.now(); await commit();
   } finally { geocoding = false; onProgress && onProgress(''); renderSettingsIfOpen(); }
@@ -955,7 +987,7 @@ function openPermit(id, fly) {
   $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close">✕</button></div>
    <div class="meta"><span class="pill" style="background:#fdba74">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
    ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', p.value)}${row('Owner', p.owner)}${row('Contractor', p.contractor)}${row('GC phone', p.cphone)}${row('GC email', p.cemail)}${row('Parcel', p.parcel)}
-   ${p.lat == null ? '<p class="small">Not placed on the map yet' + (p.geoFail ? ' (address not found)' : '') + '.</p>' : ''}
+   ${p.lat == null ? '<p class="small">Not on the map yet' + (p.geoFail ? ': the address lookup came up empty. Tap Directions to find it in Google Maps.' : '.') + '</p>' : p.approx ? '<p class="small">Pin is on the right street but the exact spot is a guess.</p>' : ''}
    <div class="actions"><a href="${nav}" target="_blank" rel="noopener">Directions</a><a href="https://www.google.com/search?q=${encodeURIComponent((p.contractor || p.owner || p.addr) + ' ' + (p.city || 'AZ'))}" target="_blank" rel="noopener">Google it</a></div>
    <p class="small">Something's being built or remodeled here. Stop by while it's under construction and ask who's handling security, cameras, access control and fire.</p>
    <button class="btn block primary" data-pact="convert">Turn into a prospect</button>
@@ -1085,7 +1117,7 @@ function renderSettings() {
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
   <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v8</p>`;
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v9</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
@@ -1228,6 +1260,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   setBadge(syncReady() ? 'ok' : 'off');
   startGPS();
   if (syncReady()) sync();
+  if (!settings.geoRetry9) { settings.geoRetry9 = true; for (const p of Object.values(state.permits || {})) if (p.geoFail) { p.geoFail = false; p.updatedAt = Date.now(); } }
   setTimeout(() => { if (Object.values(state.permits || {}).some(p => p.status === 'new' && p.lat == null && !p.geoFail)) geocodePermits(); }, 5000);
   if (!BIZ.length) { switchView('settings'); toast('Start here: tap "Load businesses"'); }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
