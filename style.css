@@ -219,3 +219,5 @@ details.card.more>summary{padding:16px 0}
 .lease-pin{width:24px;height:24px;border-radius:6px;background:#0891b2;color:#fff;font:700 13px/24px Inter,-apple-system,sans-serif;text-align:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)}
 .lease-pin.sel{outline:3px solid #1c1c1e}
 .lease-pin.site{background:#eab308;color:#1c1c1e}
+.fu-box.future{background:#f7f5ff;border-color:#e2dcfb}
+.futrow{display:flex;gap:10px;width:100%;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:8px;padding:9px 10px;margin-top:6px;color:var(--ink);font-size:14px}

@@ -518,6 +518,7 @@ function renderSheet(opts = {}) {
   ${['dm', 'followup', 'appt', 'sold'].includes(st) || r.dealInstall || r.dealMonthly ? `<div class="fu-box deal"><div class="lbl">Deal ${st === 'sold' ? '(sold)' : '(in pipeline)'}</div>
    <div class="two"><div class="field" style="margin:4px 0"><label>Install $</label><input data-f="dealInstall" type="number" inputmode="decimal" value="${esc(r.dealInstall || '')}" placeholder="0"></div>
    <div class="field" style="margin:4px 0"><label>Monthly $</label><input data-f="dealMonthly" type="number" inputmode="decimal" value="${esc(r.dealMonthly || '')}" placeholder="0"></div></div></div>` : ''}
+  ${futuresHtml(r)}
   <label class="btn block scanbtn">${ICON('card')}Scan a business card<input type="file" accept="image/*" data-scan hidden></label>
   <div class="hist"><h2 class="sec" style="margin-left:0">Visit history (${vs.length})</h2>
    ${vs.length ? vs.map(v => `<div class="hrow"><div class="when">${fmtWhen(v.t)}</div><div class="what"><span class="pill" style="--c:${S[v.s].color}">${S[v.s].label}</span>${v.note ? '<div>' + esc(v.note) + '</div>' : ''}</div><button class="del" data-delv="${v.t}" aria-label="Delete">✕</button></div>`).join('') : '<div class="small">No visits yet.</div>'}
@@ -566,6 +567,63 @@ function renderSheet(opts = {}) {
   }
   $('#sheetBody').innerHTML = h;
 }
+// ---------- future proposals (other venues to pitch later) ----------
+const VENUES = ['Burglar alarm', 'Fire alarm', 'Cameras', 'Access control', 'Video monitoring', 'Other'];
+function futuresHtml(r) {
+  const fs = (r.futures || []).filter(f => f.status === 'open');
+  const done = (r.futures || []).filter(f => f.status !== 'open');
+  const today = todayStr();
+  return `<div class="fu-box future"><div class="lbl" style="display:flex;justify-content:space-between;align-items:center"><span>Future proposals${fs.length ? ' (' + fs.length + ')' : ''}</span><button class="chip" data-act="futAdd">+ Add</button></div>
+    ${fs.length ? fs.map(f => `<button class="futrow" data-fut="${f.id}"><span style="flex:1;text-align:left"><b>${esc(f.venue)}</b>${f.notes ? '<br><span class="small">' + esc(f.notes) + '</span>' : ''}</span>
+      <span class="small" style="text-align:right">${f.revisit ? `<span style="${f.revisit <= today ? 'color:var(--danger);font-weight:600' : ''}">${fmtDate(f.revisit)}</span>` : ''}${f.monthly || f.install ? '<br>' + [f.install && money(f.install), f.monthly && money(f.monthly) + '/mo'].filter(Boolean).join(' · ') : ''}</span></button>`).join('')
+      : '<div class="small">Only went with one thing today? Add the other venues here (fire, cameras, access…) with when to bring them back up.</div>'}
+    ${done.length ? `<div class="small" style="margin-top:6px">${done.map(f => esc(f.venue) + ': ' + (f.status === 'won' ? 'won' : 'passed')).join(' · ')}</div>` : ''}</div>`;
+}
+function futureModal(id, fid) {
+  const r = touch(id); r.futures = r.futures || [];
+  const f = r.futures.find(x => x.id === fid) || { id: 'f' + Date.now().toString(36), venue: '', notes: '', install: '', monthly: '', revisit: addDays(90), status: 'open' };
+  const isNew = !r.futures.includes(f);
+  const c = customerOf(id); const suggest = c ? custGaps(c).map(k => ({ 'Burglar alarm': 'Burglar alarm', Fire: 'Fire alarm', Cameras: 'Cameras', 'Access control': 'Access control' }[k.label])) : [];
+  showModal(`<h3>${isNew ? 'Add a future proposal' : 'Future proposal'}</h3>
+    <div class="field"><label>Venue</label><div class="chips" id="futVen">${VENUES.map(v => `<button class="chip ${f.venue === v ? 'on' : ''}" data-v="${v}">${v}${suggest.includes(v) ? ' ★' : ''}</button>`).join('')}</div>
+      ${suggest.length ? '<div class="small">★ = they don\'t have it with Bay Alarm yet</div>' : ''}</div>
+    <div class="field"><label>Notes</label><textarea id="futNotes" placeholder="What they said, what it would cover, who decides…">${esc(f.notes)}</textarea></div>
+    <div class="two"><div class="field"><label>Est. install $</label><input id="futInst" type="number" inputmode="decimal" value="${esc(f.install)}"></div><div class="field"><label>Est. monthly $</label><input id="futMon" type="number" inputmode="decimal" value="${esc(f.monthly)}"></div></div>
+    <div class="field"><label>Bring it back up on</label><input id="futDate" type="date" value="${esc(f.revisit || '')}"><div class="chips">${[['1 month', 30], ['3 months', 90], ['6 months', 180], ['1 year', 365]].map(([l, n]) => `<button class="chip" data-fd="${n}">${l}</button>`).join('')}</div></div>
+    <button class="btn block primary" id="futSave">${isNew ? 'Add proposal' : 'Save'}</button>
+    ${isNew ? '' : '<div class="two"><button class="btn" id="futWon" style="color:var(--ok)">Won it</button><button class="btn" id="futLost">They passed</button></div><button class="btn block danger" id="futDel">Delete</button>'}
+    <button class="btn block ghost" id="futCancel">Cancel</button>`);
+  let venue = f.venue;
+  $('#futVen').onclick = e => { const b = e.target.closest('[data-v]'); if (!b) return; venue = b.dataset.v; $('#futVen').querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x === b)); };
+  $('#modalBody').querySelectorAll('[data-fd]').forEach(b => b.onclick = () => { $('#futDate').value = addDays(+b.dataset.fd); });
+  const finish = status => {
+    if (!venue) { toast('Pick a venue'); return; }
+    Object.assign(f, { venue, notes: $('#futNotes').value.trim(), install: $('#futInst').value, monthly: $('#futMon').value, revisit: $('#futDate').value, status: status || f.status, updatedAt: Date.now() });
+    if (isNew) { f.t = Date.now(); r.futures.push(f); }
+    r.updatedAt = state.updatedAt = Date.now(); hideModal(); commit(); renderSheet({ tab: 'visit' }); toast(isNew ? 'Future proposal added' : 'Saved');
+  };
+  $('#futSave').onclick = () => finish();
+  $('#futCancel').onclick = hideModal;
+  if (!isNew) {
+    $('#futWon').onclick = () => finish('won');
+    $('#futLost').onclick = () => finish('lost');
+    $('#futDel').onclick = () => { r.futures = r.futures.filter(x => x !== f); r.updatedAt = state.updatedAt = Date.now(); hideModal(); commit(); renderSheet({ tab: 'visit' }); };
+  }
+}
+function allFutures() {
+  const out = [];
+  for (const id in state.records) { const b = bizIndex.get(id); if (!b) continue; for (const f of (state.records[id].futures || [])) if (f.status === 'open') out.push({ b, f }); }
+  return out.sort((a, b) => (a.f.revisit || '9999').localeCompare(b.f.revisit || '9999'));
+}
+function futuresListHtml() {
+  const list = allFutures(); if (!list.length) return '';
+  const today = todayStr(), soon = addDays(30);
+  const mon = list.reduce((a, x) => a + (+x.f.monthly || 0), 0);
+  return `<h2 class="sec">Future proposals (${list.length}${mon ? ' · ' + money(mon) + '/mo potential' : ''})</h2>` + list.map(({ b, f }) => `<div class="item" data-id="${b.id}"><span class="pin" style="background:#8b5cf6"></span>
+    <div class="main"><div class="nm">${esc(b.name)}: ${esc(f.venue)}</div><div class="sub">${esc(f.notes || [f.install && money(f.install) + ' install', f.monthly && money(f.monthly) + '/mo'].filter(Boolean).join(' · ') || '')}</div></div>
+    <div class="right" style="${f.revisit && f.revisit <= today ? 'color:var(--danger);font-weight:600' : f.revisit && f.revisit <= soon ? 'color:var(--ink)' : ''}">${f.revisit ? fmtDate(f.revisit) : 'No date'}</div></div>`).join('');
+}
+
 // ---------- walkthrough photos ----------
 async function shrinkPhoto(file, max, q) {
   const bmp = await createImageBitmap(file);
@@ -656,6 +714,8 @@ $('#sheet').addEventListener('click', e => {
   }
   if (act === 'move') startPlace(id);
   if (t.dataset.stab) { sheetTab = t.dataset.stab; renderSheet(); return; }
+  if (act === 'futAdd') { futureModal(id); return; }
+  if (t.dataset.fut) { futureModal(id, t.dataset.fut); return; }
   if (act === 'qnAdd') { const ta = $('#qnText'), v = ta.value.trim(); if (!v) { ta.focus(); return; } const r = touch(id); r.noteLog = (r.noteLog || []).concat({ t: Date.now(), text: v }); commit(); renderSheet({ tab: 'notes' }); setTimeout(() => { const x = $('#qnText'); if (x) x.focus(); }, 50); return; }
   if (t.dataset.qndel) { const r = touch(id); r.noteLog = (r.noteLog || []).filter(n => String(n.t) !== t.dataset.qndel); commit(); renderSheet({ tab: 'notes' }); return; }
   if (t.dataset.pv) { showPhoto(id, t.dataset.pv); return; }
@@ -896,8 +956,8 @@ function renderFollow() {
   for (const [name, list, warn] of groups) if (list.length) h += `<h2 class="sec ${warn ? 'warn' : ''}">${name} (${list.length})</h2>` + list.map(x => item(x, fmtDate(x.r.followUp))).join('');
   if (soon.length) h += `<h2 class="sec">Contracts ending in the next 6 months (${soon.length})</h2>` + soon.map(x => item(x, esc(x.r.provider || '') + '<br>' + x.end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))).join('');
   h += permitsListHtml();
-  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + leasesHtml() + landlordsHtml();
-  const due = groups[0][1].length + groups[1][1].length;
+  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + futuresListHtml() + leasesHtml() + landlordsHtml();
+  const due = groups[0][1].length + groups[1][1].length + allFutures().filter(x => x.f.revisit && x.f.revisit <= todayStr()).length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
 }
 $('#follow').addEventListener('click', e => {
@@ -1326,6 +1386,8 @@ function entryText(e) {
   for (const f of (state.fields || [])) { const v = (r.custom || {})[f.id]; if (v) L.push(f.name + ': ' + v); }
   if (r.dealInstall || r.dealMonthly) L.push('Deal: ' + [r.dealInstall && money(r.dealInstall) + ' install', r.dealMonthly && money(r.dealMonthly) + '/mo'].filter(Boolean).join(', '));
   if (r.followUp) L.push('Follow-up: ' + fmtDate(r.followUp));
+  const futs = (r.futures || []).filter(f => f.t && ymd(new Date(f.t)) === ymd(new Date(e.first)));
+  for (const f of futs) L.push(`Future proposal: ${f.venue}${f.revisit ? ', revisit ' + fmtDate(f.revisit) : ''}${f.monthly ? ', est. ' + money(f.monthly) + '/mo' : ''}${f.notes ? ' - ' + f.notes : ''}`);
   if (e.qn && e.qn.length) { L.push('Notes from today:'); for (const n of e.qn) L.push('  ' + new Date(n.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' - ' + n.text); }
   if (r.notes) L.push('Notes: ' + r.notes);
   if (e.pics && e.pics.length) L.push(`Walkthrough photos: ${e.pics.length}` + (e.pics.some(p => p.caption) ? ' (' + e.pics.filter(p => p.caption).map(p => p.caption).join('; ') + ')' : ''));
@@ -1651,6 +1713,7 @@ function renderStats() {
   const dealCard = `<div class="card"><h3>Deals</h3><div class="kpis">
     <div class="kpi"><b>${soldM.n}</b><span>Sold this month</span></div><div class="kpi"><b>${money(soldM.inst)}</b><span>Install this month</span></div><div class="kpi"><b>${money(soldM.mon)}</b><span>Monthly added</span></div></div>
     <div class="kpis" style="margin-top:8px"><div class="kpi"><b>${pipe.n}</b><span>Open deals</span></div><div class="kpi"><b>${money(pipe.inst)}</b><span>Install in pipeline</span></div><div class="kpi"><b>${money(pipe.mon)}</b><span>Monthly in pipeline</span></div></div>
+    ${allFutures().length ? `<p class="small">Future proposals: ${allFutures().length} open · ${money(allFutures().reduce((a, x) => a + (+x.f.install || 0), 0))} install · ${money(allFutures().reduce((a, x) => a + (+x.f.monthly || 0), 0))}/mo potential</p>` : ''}
     <p class="small" style="margin-bottom:0">All time sold: ${soldAll.n} · ${money(soldAll.inst)} install · ${money(soldAll.mon)}/mo. Add $ on any deal from its Deal box.</p></div>`;
   let h = `<div class="page-title">Stats</div><div class="page-sub">How your prospecting is going. Updates as you log visits.</div>
    <div class="card" style="display:flex;align-items:center;gap:12px"><div style="flex:1"><h3 style="margin:0 0 2px">Daily log</h3><div class="small">Everything from today in one place, ready to copy into HubSpot.</div></div><button class="btn primary" id="openLog">Open</button></div>
@@ -1729,7 +1792,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v20 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v21 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -1789,7 +1852,7 @@ function download(name, text, type) {
 }
 function exportCsv() {
   const fields = state.fields || [];
-  const head = ['Name', 'Category', 'Type', 'Address', 'City', 'Zip', 'Status', 'Visits', 'First visit', 'Last visit', 'Follow-up', 'Decision maker', 'Title', 'Phone', 'Email', 'Provider', 'Contract ends', 'Current system', 'Install $', 'Monthly $', 'Property owner', 'Owner mailing address', ...fields.map(f => f.name), 'Notes', 'Lat', 'Lon'];
+  const head = ['Name', 'Category', 'Type', 'Address', 'City', 'Zip', 'Status', 'Visits', 'First visit', 'Last visit', 'Follow-up', 'Decision maker', 'Title', 'Phone', 'Email', 'Provider', 'Contract ends', 'Current system', 'Install $', 'Monthly $', 'Property owner', 'Owner mailing address', 'Future proposals', ...fields.map(f => f.name), 'Notes', 'Lat', 'Lon'];
   const q = v => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const rows = [head];
   for (const b of allBiz()) {
@@ -1797,7 +1860,7 @@ function exportCsv() {
     const vs = r.visits || [];
     rows.push([b.name, b.cat, b.type, (r.g && r.g.addr) || b.addr, b.city, b.zip, S[statusOf(b.id)].label, vs.length,
       vs[0] ? new Date(vs[0].t).toLocaleString() : '', vs.length ? new Date(vs[vs.length - 1].t).toLocaleString() : '', r.followUp || '',
-      r.dm, r.dmTitle, r.phone || (r.g && r.g.phone) || b.phone, r.email, r.provider, r.contractEnd, r.currentSystem, r.dealInstall, r.dealMonthly, r.parcel && r.parcel.owner, r.parcel && [r.parcel.mail, r.parcel.mailCity].filter(Boolean).join(', '),
+      r.dm, r.dmTitle, r.phone || (r.g && r.g.phone) || b.phone, r.email, r.provider, r.contractEnd, r.currentSystem, r.dealInstall, r.dealMonthly, r.parcel && r.parcel.owner, r.parcel && [r.parcel.mail, r.parcel.mailCity].filter(Boolean).join(', '), (r.futures || []).filter(f => f.status === 'open').map(f => f.venue + (f.revisit ? ' (' + f.revisit + ')' : '')).join('; '),
       ...fields.map(f => (r.custom || {})[f.id]), r.notes, b.lat, b.lon]);
   }
   download('knocks-' + todayStr() + '.csv', rows.map(r => r.map(q).join(',')).join('\n'), 'text/csv');
@@ -1831,7 +1894,7 @@ function showHelp() {
    <h4>Pin colors</h4>
    <ul class="plain">${STATUSES.map(s => `<li><span class="pill" style="--c:${s.color}">${s.label}</span> ${s.hint}</li>`).join('')}<li><span class="pill" style="--c:#f97316">Permit</span> Something's being built or remodeled</li></ul>
    <h4>At the door</h4>
-   <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, or <b>Scan a business card</b> to fill in the contact for you.</li><li><b>Notes &amp; photos</b> tab: general notes and walkthrough pictures for that business.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
+   <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, or <b>Scan a business card</b> to fill in the contact for you.</li><li><b>Future proposals</b> (on the Visit tab): when they only take one thing, add the other venues with a date to bring them back up. They show in Plan.</li><li><b>Notes &amp; photos</b> tab: general notes and walkthrough pictures for that business.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
    <h4>Planning</h4>
    <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li><li><b>Landlords &amp; property managers</b> (bottom of Plan) lists who owns the most commercial buildings in the territory. On any business, <b>Who owns this property?</b> pulls the owner from county records.</li></ul>
    <h4>Good to know</h4>
