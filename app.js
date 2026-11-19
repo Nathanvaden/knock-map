@@ -828,6 +828,7 @@ $('#follow').addEventListener('click', e => {
     refreshAll(); renderFollow(); return;
   }
   if (t.id === 'llLoad') return loadLandlords();
+  if (t.id === 'pmNoise') { settings.showNoisePermits = !settings.showNoisePermits; saveLocal(); renderFollow(); drawMarkers(); return; }
   const lg = t.closest('[data-ll-group]'); if (lg) return showLandlordGroup(+lg.dataset.llGroup);
   const pm = t.closest('[data-permit]'); if (pm) return openPermit(pm.dataset.permit, true);
   const it = t.closest('.item'); if (it && it.dataset.id) openBiz(it.dataset.id, { fly: false });
@@ -1022,7 +1023,13 @@ async function geocodePermits(onProgress) {
     state.updatedAt = Date.now(); await commit();
   } finally { geocoding = false; onProgress && onProgress(''); renderSettingsIfOpen(); }
 }
-function livePermits() { return Object.values(state.permits || {}).filter(p => p.status === 'new' && !p.outside); }
+// Permits that aren't a business moving in or building out: hidden unless "show hidden" is on
+const PERMIT_NOISE = /annual facilities|\bAFP\b|\bfences?\b|propane|photovoltaic|\bsolar\b|\bPV\b|battery storage|well ?head|water treatment|\bEPCOR\b|wireless|cell tower|\bWCF\b|utility|compliance inspection|irrigation|\bpools?\b|\bspa\b|demolition|re-?roof|water heater|hvac|backflow/i;
+function permitNoise(p) { return p.kind === 'residential' || PERMIT_NOISE.test([p.type, p.desc].join(' ')); }
+function permitScore(p) { const t = [p.type, p.desc].join(' '); return /\bsigns?\b|letters|pylon|monument/i.test(t) ? 3 : /tenant|\bT\.?I\.?\b|remodel|alteration|new construction|new building|shell|addition|build-?out|suite/i.test(t) ? 2 : 1; }
+function permitTime(p) { const m = String(p.date || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? new Date(+m[3], +m[1] - 1, +m[2]).getTime() : (p.importedAt || 0); }
+function allNewPermits() { return Object.values(state.permits || {}).filter(p => p.status === 'new' && !p.outside); }
+function livePermits() { return allNewPermits().filter(p => settings.showNoisePermits || !permitNoise(p)); }
 let permitMarkers = new Map();
 function drawPermits() {
   const show = filters.permits && !filters.planOnly ? livePermits().filter(p => p.lat != null) : [];
@@ -1043,7 +1050,7 @@ function permitTitle(p) {
   const t = d && d.length > 3 && !/^(signs?|accessory|addition|alteration, remodel, repair)$/i.test(d) ? d : (p.type || '').split(' · ').pop() || d;
   return (t.length > 70 ? t.slice(0, 68) + '…' : t) || 'Permit ' + (p.permit || '');
 }
-function permitOwner(p) { return (p.owner || '').replace(/^[\s,]+/, '').trim(); }
+function permitOwner(p) { const o = (p.owner || '').replace(/^[\s,]+/, '').trim(); return /^(n\/a\s*)+$/i.test(o) ? '' : o; }
 function permitAddr(p) { return (p.addr || '').split(/\n/)[0].replace(/\s+/g, ' ').replace(/\s+(SUN CITY WEST|SUN CITY|SURPRISE|PEORIA|EL MIRAGE),?\s*AZ.*$/i, '').trim(); }
 function permitValue(p) { const n = parseFloat(String(p.value || '').replace(/[^0-9.]/g, '')); return n ? money(n) : ''; }
 function openPermit(id, fly) {
@@ -1078,10 +1085,12 @@ $('#sheet').addEventListener('click', e => {
   }
 });
 function permitsListHtml() {
-  const list = livePermits().sort((a, b) => (b.importedAt || 0) - (a.importedAt || 0));
-  if (!list.length) return '';
-  return `<h2 class="sec">New permits (${list.length})</h2>` + list.slice(0, 50).map(p => `<div class="item" data-permit="${p.id}"><span class="pin" style="background:#f97316"></span>
-    <div class="main"><div class="nm">${esc(permitTitle(p))}</div><div class="sub">${esc(permitAddr(p))}${p.city ? ', ' + esc(p.city) : ''}${permitOwner(p) ? ' · ' + esc(permitOwner(p)) : ''}${p.contractor ? ' · GC: ' + esc(p.contractor) : ''}</div></div>
+  const list = livePermits().sort((a, b) => permitScore(b) - permitScore(a) || permitTime(b) - permitTime(a));
+  const hidden = allNewPermits().filter(permitNoise).length;
+  if (!list.length && !hidden) return '';
+  const tag = p => permitScore(p) === 3 ? '<span class="pill" style="--c:#f97316;margin-right:6px">Sign</span>' : permitScore(p) === 2 ? '<span class="pill" style="--c:#8b5cf6;margin-right:6px">Build-out</span>' : '';
+  return `<h2 class="sec" style="display:flex;justify-content:space-between;align-items:center">New permits (${list.length})${hidden ? `<button class="chip" id="pmNoise" style="text-transform:none;letter-spacing:0">${settings.showNoisePermits ? 'Hide' : 'Show'} ${hidden} low-value</button>` : ''}</h2>` + list.slice(0, 60).map(p => `<div class="item" data-permit="${p.id}" style="${permitNoise(p) ? 'opacity:.55' : ''}"><span class="pin" style="background:#f97316"></span>
+    <div class="main"><div class="nm">${tag(p)}${esc(permitTitle(p))}</div><div class="sub">${esc(permitAddr(p))}${p.city ? ', ' + esc(p.city) : ''}${permitOwner(p) ? ' · ' + esc(permitOwner(p)) : ''}${p.contractor ? ' · GC: ' + esc(p.contractor) : ''}</div></div>
     <div class="right">${esc(p.date || '')}${permitValue(p) ? '<br>' + permitValue(p) : ''}</div></div>`).join('');
 }
 
@@ -1304,7 +1313,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v13 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v14 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
