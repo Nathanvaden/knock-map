@@ -1038,15 +1038,22 @@ function drawPermits() {
     m.bringToFront();
   }
 }
-function permitTitle(p) { return p.owner || p.desc || p.type || 'Permit ' + (p.permit || ''); }
+function permitTitle(p) {
+  const d = (p.desc || '').replace(/\s+/g, ' ').trim();
+  const t = d && d.length > 3 && !/^(signs?|accessory|addition|alteration, remodel, repair)$/i.test(d) ? d : (p.type || '').split(' · ').pop() || d;
+  return (t.length > 70 ? t.slice(0, 68) + '…' : t) || 'Permit ' + (p.permit || '');
+}
+function permitOwner(p) { return (p.owner || '').replace(/^[\s,]+/, '').trim(); }
+function permitAddr(p) { return (p.addr || '').split(/\n/)[0].replace(/\s+/g, ' ').replace(/\s+(SUN CITY WEST|SUN CITY|SURPRISE|PEORIA|EL MIRAGE),?\s*AZ.*$/i, '').trim(); }
+function permitValue(p) { const n = parseFloat(String(p.value || '').replace(/[^0-9.]/g, '')); return n ? money(n) : ''; }
 function openPermit(id, fly) {
   const p = state.permits[id]; if (!p) return;
   current = null; currentPermit = id;
   const nav = p.lat != null ? 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lon : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(p.addr + ' ' + (p.city || '') + ' AZ');
   const row = (k, v) => v ? `<div class="brow"><span class="l" style="width:92px;color:#64748b">${k}</span><span style="flex:1">${esc(v)}</span></div>` : '';
   $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close" aria-label="Close">${ICON('x')}</button></div>
-   <div class="meta"><span class="pill" style="--c:#f97316">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
-   ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', p.value)}${row('Owner', p.owner)}${row('Contractor', p.contractor)}${row('GC phone', p.cphone)}${row('GC email', p.cemail)}${row('Parcel', p.parcel)}
+   <div class="meta"><span class="pill" style="--c:#f97316">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(permitAddr(p))}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
+   ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', permitValue(p))}${row('Owner', permitOwner(p))}${row('Contractor', p.contractor)}${row('GC phone', p.cphone)}${row('GC email', p.cemail)}${row('Parcel', p.parcel)}
    ${p.lat == null ? '<p class="small">Not on the map yet' + (p.geoFail ? ': the address lookup came up empty. Tap Directions to find it in Google Maps.' : '.') + '</p>' : p.approx ? '<p class="small">Pin is on the right street but the exact spot is a guess.</p>' : ''}
    <div class="actions"><a href="${nav}" target="_blank" rel="noopener">${ICON('nav')}Directions</a>${p.cphone ? `<a href="tel:${esc(p.cphone.replace(/[^\d+]/g, '').slice(0, 11))}">${ICON('phone')}Call GC</a>` : ''}<a href="https://www.google.com/search?q=${encodeURIComponent((p.contractor || p.owner || p.addr) + ' ' + (p.city || 'AZ'))}" target="_blank" rel="noopener">${ICON('search')}Google</a></div>
    <p class="small">Something's being built or remodeled here. Stop by while it's under construction and ask who's handling security, cameras, access control and fire.</p>
@@ -1063,7 +1070,7 @@ $('#sheet').addEventListener('click', e => {
   if (t.dataset.pact === 'convert') {
     const lat = p.lat != null ? p.lat : (me ? me.lat : map.getCenter().lat), lon = p.lon != null ? p.lon : (me ? me.lon : map.getCenter().lng);
     const z = zipOf(lat, lon); const nid = 'c' + Date.now().toString(36);
-    state.custom[nid] = { id: nid, name: permitTitle(p), cat: 'Other', type: 'under construction', lat, lon, addr: p.addr, city: p.city || (z ? z.city : ''), zip: p.zip || (z ? z.zip : ''), phone: '', web: '', hours: '', updatedAt: Date.now() };
+    state.custom[nid] = { id: nid, name: permitOwner(p) && !/^(c\/o)/i.test(permitOwner(p)) && /\b(llc|inc|corp|church|clinic|dental|school|center|co)\b/i.test(permitOwner(p)) ? permitOwner(p) : permitTitle(p), cat: 'Other', type: 'under construction', lat, lon, addr: permitAddr(p), city: p.city || (z ? z.city : ''), zip: p.zip || (z ? z.zip : ''), phone: '', web: '', hours: '', updatedAt: Date.now() };
     const r = touch(nid);
     r.notes = `From permit ${p.permit || ''}${p.date ? ' (' + p.date + ')' : ''}: ${[p.type, p.desc].filter(Boolean).join(' – ')}${p.value ? '. Value ' + p.value : ''}${p.contractor ? '. Contractor: ' + p.contractor + (p.cphone ? ' ' + p.cphone : '') + (p.cemail ? ' ' + p.cemail : '') : ''}${p.owner ? '. Owner: ' + p.owner : ''}`;
     p.status = 'converted'; p.bizId = nid; p.updatedAt = state.updatedAt = Date.now();
@@ -1074,8 +1081,8 @@ function permitsListHtml() {
   const list = livePermits().sort((a, b) => (b.importedAt || 0) - (a.importedAt || 0));
   if (!list.length) return '';
   return `<h2 class="sec">New permits (${list.length})</h2>` + list.slice(0, 50).map(p => `<div class="item" data-permit="${p.id}"><span class="pin" style="background:#f97316"></span>
-    <div class="main"><div class="nm">${esc(permitTitle(p))}</div><div class="sub">${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''}${p.contractor ? ' · ' + esc(p.contractor) : ''}</div></div>
-    <div class="right">${esc(p.date || '')}${p.value ? '<br>' + esc(p.value) : ''}</div></div>`).join('');
+    <div class="main"><div class="nm">${esc(permitTitle(p))}</div><div class="sub">${esc(permitAddr(p))}${p.city ? ', ' + esc(p.city) : ''}${permitOwner(p) ? ' · ' + esc(permitOwner(p)) : ''}${p.contractor ? ' · GC: ' + esc(p.contractor) : ''}</div></div>
+    <div class="right">${esc(p.date || '')}${permitValue(p) ? '<br>' + permitValue(p) : ''}</div></div>`).join('');
 }
 
 // ---------- property owners (Maricopa County Assessor parcel data, public, free) ----------
@@ -1150,12 +1157,14 @@ let landlordState = { running: false, msg: '' };
 async function loadLandlords() {
   if (landlordState.running) return; landlordState.running = true; landlordState.msg = 'Pulling commercial parcels from the county…'; renderFollow();
   try {
-    const all = []; let offset = 0;
-    for (;;) {
-      const j = await parcelQuery({ where: `PropertyZipCode IN (${territoryZipList()}) AND ImprovementLegalClassCode LIKE '1%'`, resultOffset: String(offset), resultRecordCount: '2000', orderByFields: 'OBJECTID' });
-      const fs = (j.features || []).map(f => cleanParcel(f.attributes)); all.push(...fs);
+    const all = []; let lastId = 0;
+    // page by OBJECTID (works on every ArcGIS server, unlike offsets)
+    for (let page = 0; page < 40; page++) {
+      const j = await parcelQuery({ where: `PropertyZipCode IN (${territoryZipList()}) AND ImprovementLegalClassCode LIKE '1%' AND OBJECTID > ${lastId}`, orderByFields: 'OBJECTID ASC', outFields: PARCEL_FIELDS + ',OBJECTID' });
+      const feats = j.features || [];
+      for (const f of feats) { all.push(cleanParcel(f.attributes)); if (f.attributes.OBJECTID > lastId) lastId = f.attributes.OBJECTID; }
       landlordState.msg = `Pulled ${all.length} commercial parcels…`; renderFollow();
-      if (!j.exceededTransferLimit || !fs.length) break; offset += fs.length;
+      if (!feats.length || !j.exceededTransferLimit) break;
     }
     const groups = new Map();
     for (const p of all) {
@@ -1295,7 +1304,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v12 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v13 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
