@@ -81,7 +81,8 @@ function allBiz() {
   const out = [];
   for (const b of BIZ) if (!state.hidden[b.id]) out.push(b);
   for (const id in state.custom) if (!state.hidden[id]) out.push(state.custom[id]);
-  return out;
+  // names you've corrected (saved on the record so they sync)
+  return out.map(b => { const r = state.records[b.id]; return r && r.rename ? Object.assign({}, b, { name: r.rename, origName: b.name }) : b; });
 }
 let bizIndex = new Map();
 function reindex() { bizIndex = new Map(allBiz().map(b => [b.id, b])); if (typeof reindexCustomers === 'function') reindexCustomers(); }
@@ -454,7 +455,7 @@ function filtered() {
     if (filters.zips.size && !filters.zips.has(b.zip)) return false;
     if (q) {
       const r = rec(b.id);
-      const hay = (b.name + ' ' + (b.addr || '') + ' ' + (b.type || '') + ' ' + (r ? [r.dm, r.notes, r.provider].join(' ') : '')).toLowerCase();
+      const hay = (b.name + ' ' + (b.origName || '') + ' ' + (b.addr || '') + ' ' + (b.type || '') + ' ' + (r ? [r.dm, r.notes, r.provider].join(' ') : '')).toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -487,7 +488,7 @@ function renderSheet(opts = {}) {
   const navUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + b.lat + ',' + b.lon;
   const photos = r.photos || [];
   // ---- header (always visible) ----
-  let h = `<div class="sh-title"><h3>${esc(b.name)}</h3><button class="closex" data-act="close" aria-label="Close">${ICON('x')}</button></div>
+  let h = `<div class="sh-title"><h3>${esc(b.name)} <button class="editname" data-act="rename" aria-label="Edit name">✎ Edit</button></h3><button class="closex" data-act="close" aria-label="Close">${ICON('x')}</button></div>
   <div class="meta"><span class="pill" style="--c:${S[st].color}">${S[st].label}</span>
    &nbsp;${esc(b.cat)}${b.type ? ' · ' + esc(b.type) : ''}${d ? ' · ' + d : ''}<br>${esc(addr || 'No address on file')} · ${esc(b.zip || '')}
    ${lastV ? '<br>Last visit: ' + fmtWhen(lastV.t) + ' (' + S[lastV.s].label + ')' : ''}
@@ -567,6 +568,28 @@ function renderSheet(opts = {}) {
   }
   $('#sheetBody').innerHTML = h;
 }
+// ---------- fix a business name ----------
+function renameModal(id) {
+  const b = bizIndex.get(id); if (!b) return;
+  const orig = b.origName || b.name;
+  showModal(`<h3>Edit business name</h3>
+    <div class="field"><label>Name</label><input id="rnName" value="${esc(b.name)}" autocomplete="off"></div>
+    ${b.origName ? `<div class="small">Map listed it as: ${esc(b.origName)}</div>` : ''}
+    <button class="btn block primary" id="rnSave">Save name</button>
+    ${b.origName ? '<button class="btn block" id="rnReset">Go back to the original name</button>' : ''}
+    <button class="btn block ghost" id="rnCancel">Cancel</button>`);
+  const inp = $('#rnName'); inp.focus(); inp.select();
+  const apply = name => {
+    const r = touch(id);
+    if (!name || name === orig) delete r.rename; else r.rename = name;
+    hideModal(); reindex(); drawMarkers(); commit(); renderSheet(); toast('Name updated');
+  };
+  $('#rnSave').onclick = () => apply(inp.value.trim());
+  inp.onkeydown = e => { if (e.key === 'Enter') apply(inp.value.trim()); };
+  if ($('#rnReset')) $('#rnReset').onclick = () => apply('');
+  $('#rnCancel').onclick = hideModal;
+}
+
 // ---------- future proposals (other venues to pitch later) ----------
 const VENUES = ['Burglar alarm', 'Fire alarm', 'Cameras', 'Access control', 'Video monitoring', 'Other'];
 function futuresHtml(r) {
@@ -715,6 +738,7 @@ $('#sheet').addEventListener('click', e => {
   if (act === 'move') startPlace(id);
   if (t.dataset.stab) { sheetTab = t.dataset.stab; renderSheet(); return; }
   if (act === 'futAdd') { futureModal(id); return; }
+  if (act === 'rename') { renameModal(id); return; }
   if (t.dataset.fut) { futureModal(id, t.dataset.fut); return; }
   if (act === 'qnAdd') { const ta = $('#qnText'), v = ta.value.trim(); if (!v) { ta.focus(); return; } const r = touch(id); r.noteLog = (r.noteLog || []).concat({ t: Date.now(), text: v }); commit(); renderSheet({ tab: 'notes' }); setTimeout(() => { const x = $('#qnText'); if (x) x.focus(); }, 50); return; }
   if (t.dataset.qndel) { const r = touch(id); r.noteLog = (r.noteLog || []).filter(n => String(n.t) !== t.dataset.qndel); commit(); renderSheet({ tab: 'notes' }); return; }
@@ -1792,7 +1816,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v21 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v22 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
