@@ -467,7 +467,7 @@ function filterActive() { return filters.statuses.size || filters.cats.size || f
 function openBiz(id, opts = {}) {
   const b = bizIndex.get(id); if (!b) return;
   currentPermit = null; currentLease = null;
-  if (current !== id) sheetTab = 'visit';
+  if (current !== id) sheetTab = (rec(id) || {}).activeAppt ? 'appt' : 'visit';
   const prev = current; current = id;
   if (prev && markers.get(prev)) drawMarkers(); else drawMarkers();
   renderSheet(opts);
@@ -486,7 +486,7 @@ function renderSheet(opts = {}) {
   const d = me ? fmtMi(dist(me.lat, me.lon, b.lat, b.lon)) : '';
   const lastV = (r.visits || [])[r.visits ? r.visits.length - 1 : 0];
   const navUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + b.lat + ',' + b.lon;
-  const photos = r.photos || [];
+  const photos = (r.photos || []).filter(p => !p.appt);
   // ---- header (always visible) ----
   let h = `<div class="sh-title"><h3>${esc(b.name)} <button class="editname" data-act="rename" aria-label="Edit name">✎ Edit</button></h3><button class="closex" data-act="close" aria-label="Close">${ICON('x')}</button></div>
   <div class="meta"><span class="pill" style="--c:${S[st].color}">${S[st].label}</span>
@@ -502,7 +502,8 @@ function renderSheet(opts = {}) {
   </div>
   <div class="stabs" role="tablist">
     <button data-stab="visit" class="${sheetTab === 'visit' ? 'on' : ''}">Visit</button>
-    <button data-stab="notes" class="${sheetTab === 'notes' ? 'on' : ''}">Notes &amp; photos${photos.length ? ` <span class="cnt">${photos.length}</span>` : (r.notes || (r.noteLog || []).length) ? ' <span class="cnt">•</span>' : ''}</button>
+    <button data-stab="appt" class="${sheetTab === 'appt' ? 'on' : ''}">Appt${r.activeAppt ? ' <span class="cnt live">●</span>' : (r.appts || []).length ? ` <span class="cnt">${r.appts.length}</span>` : ''}</button>
+    <button data-stab="notes" class=""${sheetTab === 'notes' ? 'on' : ''}">Notes &amp; photos${photos.length ? ` <span class="cnt">${photos.length}</span>` : (r.notes || (r.noteLog || []).length) ? ' <span class="cnt">•</span>' : ''}</button>
     <button data-stab="details" class="${sheetTab === 'details' ? 'on' : ''}">Details</button>
   </div>`;
   // ---- Visit tab ----
@@ -525,6 +526,7 @@ function renderSheet(opts = {}) {
    ${vs.length ? vs.map(v => `<div class="hrow"><div class="when">${fmtWhen(v.t)}</div><div class="what"><span class="pill" style="--c:${S[v.s].color}">${S[v.s].label}</span>${v.note ? '<div>' + esc(v.note) + '</div>' : ''}</div><button class="del" data-delv="${v.t}" aria-label="Delete">✕</button></div>`).join('') : '<div class="small">No visits yet.</div>'}
   </div>`;
   }
+  if (sheetTab === 'appt') h += apptTabHtml(id, r);
   // ---- Notes & photos tab ----
   if (sheetTab === 'notes') {
     const log = (r.noteLog || []).slice().reverse();
@@ -568,6 +570,58 @@ function renderSheet(opts = {}) {
   }
   $('#sheetBody').innerHTML = h;
 }
+// ---------- appointments (notes kept separate from general notes) ----------
+function flushAp(id) {
+  for (const k in apTimers) clearTimeout(apTimers[k]); const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (!a) return;
+  document.querySelectorAll('#sheet [data-ap]').forEach(el => { a[el.dataset.ap] = el.value.trim(); }); a.updatedAt = Date.now();
+}
+function startAppt(id) {
+  const r = touch(id); r.appts = r.appts || [];
+  const a = { id: 'a' + Date.now().toString(36), t: Date.now(), who: r.dm || '', venues: [], notes: '', log: [], updatedAt: Date.now() };
+  r.appts.push(a); r.activeAppt = a.id; commit(); renderSheet({ tab: 'appt' }); toast('Appointment started. Everything here stays with this appointment.');
+}
+function apptTime(a) { const tm = t => new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); return fmtDate(ymd(new Date(a.t))) + ', ' + tm(a.t) + (a.end ? '–' + tm(a.end) : ''); }
+function apptTabHtml(id, r) {
+  const appts = r.appts || [], act = appts.find(a => a.id === r.activeAppt);
+  const pics = aid => (r.photos || []).filter(p => p.appt === aid);
+  const grid = ps => ps.length ? `<div class="pgrid">${ps.slice().reverse().map(p => `<button class="pthumb" data-pv="${p.t}" aria-label="Open photo"><img src="${p.thumb}" alt="">${p.caption ? `<span>${esc(p.caption)}</span>` : ''}</button>`).join('')}</div>` : '';
+  let h = '';
+  if (act) {
+    const log = (act.log || []).slice().reverse();
+    h += `<div class="appt-live"><div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><div><b>Appointment in progress</b><div class="small">Started ${apptTime(act)}</div></div><button class="btn primary" data-act="apEnd" style="padding:9px 14px">End &amp; save</button></div></div>
+    <div class="field"><label>Who's there</label><input data-ap="who" value="${esc(act.who || '')}" placeholder="Names and titles"></div>
+    <div class="field"><label>Interested in</label><div class="chips">${VENUES.map(v => `<button class="chip ${(act.venues || []).includes(v) ? 'on' : ''}" data-apven="${v}">${v}</button>`).join('')}</div></div>
+    <div class="field"><label>Running notes (time-stamped)</label>
+     <div style="display:flex;gap:8px;align-items:flex-end"><textarea id="apText" rows="2" style="flex:1;min-height:48px" placeholder="Type or tap the mic on your keyboard…"></textarea><button class="btn primary" data-act="apLog" style="padding:12px 16px">Add</button></div>
+     ${log.length ? `<div class="qnlist">${log.map(n => `<div class="hrow"><div class="when">${new Date(n.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</div><div class="what" style="white-space:pre-wrap">${esc(n.text)}</div><button class="del" data-aplogdel="${act.id}|${n.t}" aria-label="Delete">✕</button></div>`).join('')}</div>` : ''}</div>
+    <div class="field"><label>Appointment notes</label><textarea data-ap="notes" class="notes-big" placeholder="Needs, pain points, layout, current system, budget, next steps…">${esc(act.notes || '')}</textarea><div class="small">Saves as you type.</div></div>
+    <div class="field"><label>Next steps</label><input data-ap="next" value="${esc(act.next || '')}" placeholder="Send quote by Friday, site survey with tech…"></div>
+    <div class="sec-label"><span>Appointment photos (${pics(act.id).length})</span></div>
+    <label class="btn block">${ICON('camera')}Add photos<input type="file" accept="image/*" multiple data-aphotos hidden></label>
+    <div id="apPhotoMsg" class="small"></div>${grid(pics(act.id))}`;
+  } else {
+    h += `<button class="btn block primary" data-act="apStart" style="margin-top:14px">Start appointment</button>
+    <p class="small">Keeps everything from the appointment (who was there, what they want, running notes, photos) separate from your general notes. Tap <b>End &amp; save</b> when you leave.</p>`;
+  }
+  const past = appts.filter(a => a.id !== r.activeAppt).slice().reverse();
+  if (past.length) h += `<h2 class="sec" style="margin-left:0">Past appointments (${past.length})</h2>` + past.map(a => `<div class="appt-card">
+    <div style="display:flex;justify-content:space-between;gap:8px"><b>${apptTime(a)}</b><span><button class="chip" data-apopen="${a.id}">Edit</button> <button class="chip" data-apdel="${a.id}">Delete</button></span></div>
+    ${a.who ? `<div class="small">With: ${esc(a.who)}</div>` : ''}${(a.venues || []).length ? `<div class="small">Interested in: ${a.venues.map(esc).join(', ')}</div>` : ''}
+    ${(a.log || []).length ? `<div class="aplog">${a.log.map(n => `<div><span class="small">${new Date(n.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</span> ${esc(n.text)}</div>`).join('')}</div>` : ''}
+    ${a.notes ? `<div style="white-space:pre-wrap;margin-top:6px">${esc(a.notes)}</div>` : ''}${a.next ? `<div class="small" style="margin-top:6px"><b>Next:</b> ${esc(a.next)}</div>` : ''}
+    ${grid(pics(a.id))}</div>`).join('');
+  return h;
+}
+function apptText(a, r) {
+  const L = ['Appointment ' + apptTime(a).split(', ').slice(1).join(', ') + (a.who ? ' with ' + a.who : '')];
+  if ((a.venues || []).length) L.push('  Interested in: ' + a.venues.join(', '));
+  for (const n of (a.log || [])) L.push('  ' + new Date(n.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' - ' + n.text);
+  if (a.notes) L.push('  Notes: ' + a.notes);
+  if (a.next) L.push('  Next steps: ' + a.next);
+  const ps = (r.photos || []).filter(p => p.appt === a.id); if (ps.length) L.push('  Photos: ' + ps.length + (ps.some(p => p.caption) ? ' (' + ps.filter(p => p.caption).map(p => p.caption).join('; ') + ')' : ''));
+  return L.join('\n');
+}
+
 // ---------- fix a business name ----------
 function renameModal(id) {
   const b = bizIndex.get(id); if (!b) return;
@@ -655,8 +709,8 @@ async function shrinkPhoto(file, max, q) {
   c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
   return c.toDataURL('image/jpeg', q);
 }
-async function addPhotos(id, files) {
-  const msg = () => $('#photoMsg');
+async function addPhotos(id, files, apptId) {
+  const msg = () => $(apptId ? '#apPhotoMsg' : '#photoMsg');
   let n = 0;
   for (const f of files) {
     n++; if (msg()) msg().textContent = `Saving photo ${n} of ${files.length}…`;
@@ -664,14 +718,14 @@ async function addPhotos(id, files) {
       const full = await shrinkPhoto(f, 1600, 0.78), thumb = await shrinkPhoto(f, 260, 0.6);
       const t = Date.now() + n, path = 'photos/' + id + '/' + t + '.jpg';
       await kv.set('card:' + path, full); await addPendingPhoto(path);
-      const r = touch(id); r.photos = (r.photos || []).concat({ t, path, thumb, caption: '' });
+      const r = touch(id); r.photos = (r.photos || []).concat(Object.assign({ t, path, thumb, caption: '' }, apptId ? { appt: apptId } : {}));
     } catch (err) { toast('Could not read one of the photos'); }
   }
-  await commit(); renderSheet({ tab: 'notes' }); toast(files.length === 1 ? 'Photo added' : files.length + ' photos added');
+  await commit(); renderSheet({ tab: apptId ? 'appt' : 'notes' }); toast(files.length === 1 ? 'Photo added' : files.length + ' photos added');
 }
 function showPhoto(id, t) {
   const r = rec(id); const p = (r.photos || []).find(x => String(x.t) === String(t)); if (!p) return;
-  showModal(`<h3>Walkthrough photo</h3><p class="small">${fmtWhen(p.t)}</p>
+  showModal(`<h3>${p.appt ? 'Appointment photo' : 'Walkthrough photo'}</h3><p class="small">${fmtWhen(p.t)}</p>
     <img id="phImg" src="${p.thumb}" style="width:100%;border-radius:10px;background:#eee"><p class="small" id="phMsg">Loading full size…</p>
     <div class="field"><label>Caption</label><input id="phCap" value="${esc(p.caption || '')}" placeholder="Panel location, camera spot, back door…"></div>
     <div class="two"><button class="btn danger" id="phDel">Delete photo</button><button class="btn primary" id="phDone">Done</button></div>`);
@@ -682,8 +736,9 @@ function showPhoto(id, t) {
       if (src) { $('#phImg').src = src; $('#phMsg').remove(); } else $('#phMsg').textContent = 'Full size is only on the device that took it (it uploads once that device syncs).';
     } catch (e) { const m = $('#phMsg'); if (m) m.textContent = 'Could not load the full-size photo.'; }
   })();
-  $('#phDone').onclick = () => { const cap = $('#phCap').value.trim(); if (cap !== (p.caption || '')) { p.caption = cap; touch(id); commit(); } hideModal(); renderSheet({ tab: 'notes' }); };
-  $('#phDel').onclick = () => { const rr = touch(id); rr.photos = rr.photos.filter(x => x !== p); commit(); hideModal(); renderSheet({ tab: 'notes' }); toast('Photo deleted'); };
+  const back = p.appt ? 'appt' : 'notes';
+  $('#phDone').onclick = () => { const cap = $('#phCap').value.trim(); if (cap !== (p.caption || '')) { p.caption = cap; touch(id); commit(); } hideModal(); renderSheet({ tab: back }); };
+  $('#phDel').onclick = () => { const rr = touch(id); rr.photos = rr.photos.filter(x => x !== p); commit(); hideModal(); renderSheet({ tab: back }); toast('Photo deleted'); };
 }
 function customFieldHtml(f, r) {
   const v = (r.custom || {})[f.id];
@@ -739,6 +794,13 @@ $('#sheet').addEventListener('click', e => {
   if (t.dataset.stab) { sheetTab = t.dataset.stab; renderSheet(); return; }
   if (act === 'futAdd') { futureModal(id); return; }
   if (act === 'rename') { renameModal(id); return; }
+  if (act === 'apStart') { startAppt(id); return; }
+  if (act === 'apEnd') { flushAp(id); const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (a) { a.end = Date.now(); a.updatedAt = Date.now(); } delete r.activeAppt; commit(); renderSheet({ tab: 'appt' }); toast('Appointment saved'); return; }
+  if (act === 'apLog') { flushAp(id); const ta = $('#apText'), v = ta.value.trim(); if (!v) { ta.focus(); return; } const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (!a) return; a.log = (a.log || []).concat({ t: Date.now(), text: v }); commit(); renderSheet({ tab: 'appt' }); setTimeout(() => { const x = $('#apText'); if (x) x.focus(); }, 50); return; }
+  if (t.dataset.aplogdel) { const r = touch(id), [aid, tt] = t.dataset.aplogdel.split('|'), a = (r.appts || []).find(x => x.id === aid); if (a) a.log = (a.log || []).filter(n => String(n.t) !== tt); commit(); renderSheet({ tab: 'appt' }); return; }
+  if (t.dataset.apven) { flushAp(id); const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (!a) return; const v = t.dataset.apven; a.venues = (a.venues || []).includes(v) ? a.venues.filter(x => x !== v) : (a.venues || []).concat(v); commit(); renderSheet({ tab: 'appt' }); return; }
+  if (t.dataset.apopen) { const r = touch(id); if (r.activeAppt) { toast('Finish the current appointment first'); return; } r.activeAppt = t.dataset.apopen; commit(); renderSheet({ tab: 'appt' }); return; }
+  if (t.dataset.apdel) { showModal('<h3>Delete this appointment?</h3><p class="small">Its notes are deleted. Photos from it move to Walkthrough photos.</p><div class="two"><button class="btn" id="apdNo">Cancel</button><button class="btn danger" id="apdYes">Delete</button></div>'); const aid = t.dataset.apdel; $('#apdNo').onclick = hideModal; $('#apdYes').onclick = () => { const r = touch(id); r.appts = (r.appts || []).filter(x => x.id !== aid); (r.photos || []).forEach(p => { if (p.appt === aid) delete p.appt; }); if (r.activeAppt === aid) delete r.activeAppt; hideModal(); commit(); renderSheet({ tab: 'appt' }); }; return; }
   if (t.dataset.fut) { futureModal(id, t.dataset.fut); return; }
   if (act === 'qnAdd') { const ta = $('#qnText'), v = ta.value.trim(); if (!v) { ta.focus(); return; } const r = touch(id); r.noteLog = (r.noteLog || []).concat({ t: Date.now(), text: v }); commit(); renderSheet({ tab: 'notes' }); setTimeout(() => { const x = $('#qnText'); if (x) x.focus(); }, 50); return; }
   if (t.dataset.qndel) { const r = touch(id); r.noteLog = (r.noteLog || []).filter(n => String(n.t) !== t.dataset.qndel); commit(); renderSheet({ tab: 'notes' }); return; }
@@ -759,15 +821,18 @@ $('#sheet').addEventListener('click', e => {
   }
   if (t.dataset.photo) showCardPhoto(t.dataset.photo);
 });
-let notesTimer;
+let notesTimer; const apTimers = {};
 $('#sheet').addEventListener('input', e => {
-  const el = e.target; if (!current || el.dataset.f !== 'notes') return;
+  const el = e.target; if (!current) return;
+  if (el.dataset.ap) { const id = current, k = el.dataset.ap, v = el.value; clearTimeout(apTimers[k]); apTimers[k] = setTimeout(() => { const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (!a) return; a[k] = v.trim(); a.updatedAt = Date.now(); saveLocal(); scheduleSync(); }, 600); return; }
+  if (el.dataset.f !== 'notes') return;
   clearTimeout(notesTimer); const id = current, v = el.value;
   notesTimer = setTimeout(() => { const r = touch(id); r.notes = v.trim(); saveLocal(); scheduleSync(); }, 700);
 });
 $('#sheet').addEventListener('change', e => {
   const el = e.target; if (!current) return;
   if (el.dataset.photos !== undefined && el.files && el.files.length) { const fs = [...el.files]; el.value = ''; addPhotos(current, fs); return; }
+  if (el.dataset.aphotos !== undefined && el.files && el.files.length) { flushAp(current); const fs = [...el.files]; el.value = ''; addPhotos(current, fs, (rec(current) || {}).activeAppt); return; }
   if (el.dataset.scan !== undefined && el.files && el.files[0]) { const f = el.files[0]; el.value = ''; scanForBiz(current, f); return; }
   if (el.id === 'fuPick') { const r = touch(current); r.followUp = el.value; commit(); renderSheet(); return; }
   if (el.dataset.f) { const r = touch(current); r[el.dataset.f] = el.value.trim(); commit(); }
@@ -1389,10 +1454,11 @@ function dayEntries(day) {
     const r = state.records[id], b = bizIndex.get(id); if (!b) continue;
     const vs = (r.visits || []).filter(v => ymd(new Date(v.t)) === day);
     const cards = (r.cards || []).filter(c => ymd(new Date(c.t)) === day);
-    const pics = (r.photos || []).filter(p => ymd(new Date(p.t)) === day);
+    const pics = (r.photos || []).filter(p => !p.appt && ymd(new Date(p.t)) === day);
     const qn = (r.noteLog || []).filter(n => ymd(new Date(n.t)) === day);
-    if (!vs.length && !cards.length && !pics.length && !qn.length) continue;
-    out.push({ b, r, vs, cards, pics, qn, first: Math.min(...vs.map(v => v.t), ...cards.map(c => c.t), ...pics.map(p => p.t), ...qn.map(n => n.t)) });
+    const ap = (r.appts || []).filter(a => ymd(new Date(a.t)) === day);
+    if (!vs.length && !cards.length && !pics.length && !qn.length && !ap.length) continue;
+    out.push({ b, r, vs, cards, pics, qn, ap, first: Math.min(...vs.map(v => v.t), ...cards.map(c => c.t), ...pics.map(p => p.t), ...qn.map(n => n.t), ...ap.map(a => a.t)) });
   }
   return out.sort((a, b) => a.first - b.first);
 }
@@ -1412,6 +1478,7 @@ function entryText(e) {
   if (r.followUp) L.push('Follow-up: ' + fmtDate(r.followUp));
   const futs = (r.futures || []).filter(f => f.t && ymd(new Date(f.t)) === ymd(new Date(e.first)));
   for (const f of futs) L.push(`Future proposal: ${f.venue}${f.revisit ? ', revisit ' + fmtDate(f.revisit) : ''}${f.monthly ? ', est. ' + money(f.monthly) + '/mo' : ''}${f.notes ? ' - ' + f.notes : ''}`);
+  for (const a of (e.ap || [])) L.push(apptText(a, r));
   if (e.qn && e.qn.length) { L.push('Notes from today:'); for (const n of e.qn) L.push('  ' + new Date(n.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' - ' + n.text); }
   if (r.notes) L.push('Notes: ' + r.notes);
   if (e.pics && e.pics.length) L.push(`Walkthrough photos: ${e.pics.length}` + (e.pics.some(p => p.caption) ? ' (' + e.pics.filter(p => p.caption).map(p => p.caption).join('; ') + ')' : ''));
@@ -1816,7 +1883,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v22 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v23 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -1918,7 +1985,7 @@ function showHelp() {
    <h4>Pin colors</h4>
    <ul class="plain">${STATUSES.map(s => `<li><span class="pill" style="--c:${s.color}">${s.label}</span> ${s.hint}</li>`).join('')}<li><span class="pill" style="--c:#f97316">Permit</span> Something's being built or remodeled</li></ul>
    <h4>At the door</h4>
-   <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, or <b>Scan a business card</b> to fill in the contact for you.</li><li><b>Future proposals</b> (on the Visit tab): when they only take one thing, add the other venues with a date to bring them back up. They show in Plan.</li><li><b>Notes &amp; photos</b> tab: general notes and walkthrough pictures for that business.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
+   <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, or <b>Scan a business card</b> to fill in the contact for you.</li><li><b>Appt</b> tab: tap <b>Start appointment</b> when you sit down. Who's there, what they want, running notes and photos all stay with that appointment, apart from your general notes.</li><li><b>Future proposals</b> (on the Visit tab): when they only take one thing, add the other venues with a date to bring them back up. They show in Plan.</li><li><b>Notes &amp; photos</b> tab: general notes and walkthrough pictures for that business.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
    <h4>Planning</h4>
    <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li><li><b>Landlords &amp; property managers</b> (bottom of Plan) lists who owns the most commercial buildings in the territory. On any business, <b>Who owns this property?</b> pulls the owner from county records.</li></ul>
    <h4>Good to know</h4>

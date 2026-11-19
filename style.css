@@ -222,3 +222,7 @@ details.card.more>summary{padding:16px 0}
 .fu-box.future{background:#f7f5ff;border-color:#e2dcfb}
 .futrow{display:flex;gap:10px;width:100%;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:8px;padding:9px 10px;margin-top:6px;color:var(--ink);font-size:14px}
 .editname{font-family:inherit;font-size:12px;font-weight:500;line-height:1;color:var(--muted);background:var(--soft,#f1f3f6);border:1px solid var(--line);border-radius:6px;padding:4px 7px;margin-left:6px;vertical-align:middle;cursor:pointer}
+.stabs .cnt.live{background:none;color:var(--accent);min-width:0;padding:0;font-size:11px}
+.appt-live{background:#fff5f4;border:1px solid #f8cfcb;border-radius:10px;padding:12px;margin:14px 0 6px}
+.appt-card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:10px;font-size:14px}
+.aplog{margin-top:6px;border-left:3px solid var(--line);padding-left:8px;display:grid;gap:3px}
