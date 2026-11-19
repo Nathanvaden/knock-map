@@ -465,6 +465,7 @@ function filterActive() { return filters.statuses.size || filters.cats.size || f
 function openBiz(id, opts = {}) {
   const b = bizIndex.get(id); if (!b) return;
   currentPermit = null;
+  if (current !== id) sheetTab = 'visit';
   const prev = current; current = id;
   if (prev && markers.get(prev)) drawMarkers(); else drawMarkers();
   renderSheet(opts);
@@ -472,14 +473,19 @@ function openBiz(id, opts = {}) {
   if (opts.fly) { switchView('map'); map.setView([b.lat, b.lon], Math.max(map.getZoom(), 17)); }
 }
 function closeSheet() { current = null; currentPermit = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
+let sheetTab = 'visit';
 function renderSheet(opts = {}) {
   const id = current, b = bizIndex.get(id); if (!b) return closeSheet();
+  if (opts.tab) sheetTab = opts.tab;
+  if (opts.openDetails) sheetTab = 'details';
   const r = rec(id) || {}; const st = statusOf(id); const g = r.g || {};
   const phone = r.phone || g.phone || b.phone; const web = g.web || r.webCard || b.web;
   const addr = g.addr || r.addrCard || [b.addr, b.city].filter(Boolean).join(', ');
   const d = me ? fmtMi(dist(me.lat, me.lon, b.lat, b.lon)) : '';
   const lastV = (r.visits || [])[r.visits ? r.visits.length - 1 : 0];
   const navUrl = 'https://www.google.com/maps/dir/?api=1&destination=' + b.lat + ',' + b.lon;
+  const photos = r.photos || [];
+  // ---- header (always visible) ----
   let h = `<div class="sh-title"><h3>${esc(b.name)}</h3><button class="closex" data-act="close" aria-label="Close">${ICON('x')}</button></div>
   <div class="meta"><span class="pill" style="--c:${S[st].color}">${S[st].label}</span>
    &nbsp;${esc(b.cat)}${b.type ? ' · ' + esc(b.type) : ''}${d ? ' · ' + d : ''}<br>${esc(addr || 'No address on file')} · ${esc(b.zip || '')}
@@ -492,8 +498,15 @@ function renderSheet(opts = {}) {
     ${web ? `<a href="${esc(/^https?:/.test(web) ? web : 'https://' + web)}" target="_blank" rel="noopener">${ICON('globe')}Website</a>` : ''}
     <a href="https://www.google.com/search?q=${encodeURIComponent(b.name + ' ' + (b.city || ''))}" target="_blank" rel="noopener">${ICON('search')}Google</a>
   </div>
-  <label class="btn block scanbtn">${ICON('card')}Scan a business card<input type="file" accept="image/*" data-scan hidden></label>
-  <div class="sec-label"><span>Log this visit</span>${lastV && ymd(new Date(lastV.t)) === todayStr() ? `<button class="btn primary" data-act="next" style="padding:7px 12px;text-transform:none;letter-spacing:0">Next closest ${ICON('arrow')}</button>` : ''}</div>
+  <div class="stabs" role="tablist">
+    <button data-stab="visit" class="${sheetTab === 'visit' ? 'on' : ''}">Visit</button>
+    <button data-stab="notes" class="${sheetTab === 'notes' ? 'on' : ''}">Notes &amp; photos${photos.length ? ` <span class="cnt">${photos.length}</span>` : r.notes ? ' <span class="cnt">•</span>' : ''}</button>
+    <button data-stab="details" class="${sheetTab === 'details' ? 'on' : ''}">Details</button>
+  </div>`;
+  // ---- Visit tab ----
+  if (sheetTab === 'visit') {
+    const vs = (r.visits || []).slice().reverse();
+    h += `<div class="sec-label"><span>Log this visit</span>${lastV && ymd(new Date(lastV.t)) === todayStr() ? `<button class="btn primary" data-act="next" style="padding:7px 12px;text-transform:none;letter-spacing:0">Next closest ${ICON('arrow')}</button>` : ''}</div>
   <div class="outcomes">${STATUSES.filter(s => s.k !== 'new').map(s => `<button data-out="${s.k}" style="--c:${s.color}" class="${s.k === st ? 'cur' : ''}" title="${s.hint}">${s.label}</button>`).join('')}</div>
   <div class="fu-box"><div class="lbl">Follow-up${r.followUp ? ': <b>' + fmtDate(r.followUp) + '</b>' : ''}</div>
    <div class="chips">
@@ -503,9 +516,26 @@ function renderSheet(opts = {}) {
    </div></div>
   ${['dm', 'followup', 'appt', 'sold'].includes(st) || r.dealInstall || r.dealMonthly ? `<div class="fu-box deal"><div class="lbl">Deal ${st === 'sold' ? '(sold)' : '(in pipeline)'}</div>
    <div class="two"><div class="field" style="margin:4px 0"><label>Install $</label><input data-f="dealInstall" type="number" inputmode="decimal" value="${esc(r.dealInstall || '')}" placeholder="0"></div>
-   <div class="field" style="margin:4px 0"><label>Monthly $</label><input data-f="dealMonthly" type="number" inputmode="decimal" value="${esc(r.dealMonthly || '')}" placeholder="0"></div></div></div>` : ''}`;
-  // details
-  h += `<details ${opts.openDetails || r.dm || r.provider || r.notes ? 'open' : ''}><summary>Details</summary>
+   <div class="field" style="margin:4px 0"><label>Monthly $</label><input data-f="dealMonthly" type="number" inputmode="decimal" value="${esc(r.dealMonthly || '')}" placeholder="0"></div></div></div>` : ''}
+  <label class="btn block scanbtn">${ICON('card')}Scan a business card<input type="file" accept="image/*" data-scan hidden></label>
+  <div class="hist"><h2 class="sec" style="margin-left:0">Visit history (${vs.length})</h2>
+   ${vs.length ? vs.map(v => `<div class="hrow"><div class="when">${fmtWhen(v.t)}</div><div class="what"><span class="pill" style="--c:${S[v.s].color}">${S[v.s].label}</span>${v.note ? '<div>' + esc(v.note) + '</div>' : ''}</div><button class="del" data-delv="${v.t}" aria-label="Delete">✕</button></div>`).join('') : '<div class="small">No visits yet.</div>'}
+  </div>`;
+  }
+  // ---- Notes & photos tab ----
+  if (sheetTab === 'notes') {
+    h += `<div class="field" style="margin-top:14px"><label>General notes</label>
+     <textarea data-f="notes" class="notes-big" placeholder="Anything worth remembering: pain points, who to ask for, best time to come back, what you saw on the walkthrough…">${esc(r.notes || '')}</textarea>
+     <div class="small">Saves as you type.</div></div>
+   <div class="sec-label"><span>Walkthrough photos (${photos.length})</span></div>
+   <label class="btn block primary">${ICON('camera')}Add photos<input type="file" accept="image/*" multiple data-photos hidden></label>
+   <div id="photoMsg" class="small"></div>
+   ${photos.length ? `<div class="pgrid">${photos.slice().reverse().map(p => `<button class="pthumb" data-pv="${p.t}" aria-label="Open photo"><img src="${p.thumb}" alt="">${p.caption ? `<span>${esc(p.caption)}</span>` : ''}</button>`).join('')}</div>`
+     : '<p class="small">Snap the panel, entry points, camera spots, the old system — anything you\'ll want when you build the quote.</p>'}`;
+  }
+  // ---- Details tab ----
+  if (sheetTab === 'details') {
+    h += `<div style="margin-top:12px">
    <div class="two"><div class="field"><label>Decision maker</label><input data-f="dm" value="${esc(r.dm || '')}" placeholder="Name"></div>
    <div class="field"><label>Their title</label><input data-f="dmTitle" value="${esc(r.dmTitle || '')}" placeholder="Owner, GM…"></div></div>
    <div class="two"><div class="field"><label>Direct phone</label><input data-f="phone" type="tel" value="${esc(r.phone || '')}" placeholder="${esc(b.phone || g.phone || '')}"></div>
@@ -515,29 +545,59 @@ function renderSheet(opts = {}) {
    <div class="field"><label>What they have now</label><input data-f="currentSystem" value="${esc(r.currentSystem || '')}" placeholder="Alarm, cameras, access control, fire…"></div>
    ${(state.fields || []).map(f => customFieldHtml(f, r)).join('')}
    ${(r.cards || []).length ? `<div class="field"><label>Business cards (${r.cards.length})</label>${r.cards.map(c => `<div class="cardrow"><div><b>${esc(c.name || 'No name')}</b>${c.title ? ' · ' + esc(c.title) : ''}<br><span class="small">${[c.cell && 'Cell ' + c.cell, c.phone && 'Office ' + c.phone, c.email, c.web].filter(Boolean).map(esc).join(' · ')}</span></div>${c.photo ? `<button class="chip" data-photo="${esc(c.photo)}">Photo</button>` : ''}</div>`).join('')}</div>` : ''}
-   <div class="field"><label>Notes</label><textarea data-f="notes" placeholder="Pain points, best time to come back, who to ask for…">${esc(r.notes || '')}</textarea></div>
-   <datalist id="provList">${PROVIDERS.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
-  </details>`;
-  // property owner
-  h += r.parcel ? ownerBoxHtml(r) : `<button class="btn block" data-act="owner">Who owns this property?</button>`;
-  // google
-  if (r.g) {
-    h += `<div class="gbox"><b>Google info</b> <span class="small">(${fmtDate(ymd(new Date(r.g.at)))})</span>
+   <datalist id="provList">${PROVIDERS.map(p => `<option value="${esc(p)}">`).join('')}</datalist></div>`;
+    h += r.parcel ? ownerBoxHtml(r) : `<button class="btn block" data-act="owner">Who owns this property?</button>`;
+    if (r.g) {
+      h += `<div class="gbox"><b>Google info</b> <span class="small">(${fmtDate(ymd(new Date(r.g.at)))})</span>
       ${r.g.name ? `<div>${esc(r.g.name)}</div>` : ''}${r.g.addr ? `<div>${esc(r.g.addr)}</div>` : ''}${r.g.phone ? `<div>📞 ${esc(r.g.phone)}</div>` : ''}
       ${r.g.status && r.g.status !== 'OPERATIONAL' ? `<div class="err">${esc(r.g.status.replace(/_/g, ' ').toLowerCase())}</div>` : ''}
       ${r.g.hours ? `<div class="small">${r.g.hours.map(esc).join('<br>')}</div>` : ''}</div>`;
-  } else if (b.hours) h += `<div class="gbox"><b>Hours (OSM):</b> ${esc(b.hours)}</div>`;
-  if (settings.gkey) h += `<button class="btn block" data-act="google">${r.g ? 'Refresh Google info' : 'Get phone, hours & address from Google'}</button>`;
-  // history
-  const vs = (r.visits || []).slice().reverse();
-  h += `<div class="hist"><h2 class="sec" style="margin-left:0">Visit history (${vs.length})</h2>
-   ${vs.length ? vs.map(v => `<div class="hrow"><div class="when">${fmtWhen(v.t)}</div><div class="what"><span class="pill" style="--c:${S[v.s].color}">${S[v.s].label}</span>${v.note ? '<div>' + esc(v.note) + '</div>' : ''}</div><button class="del" data-delv="${v.t}" aria-label="Delete">✕</button></div>`).join('') : '<div class="small">No visits yet.</div>'}
-  </div>
-  <div class="two" style="margin-top:12px">
+    } else if (b.hours) h += `<div class="gbox"><b>Hours (OSM):</b> ${esc(b.hours)}</div>`;
+    if (settings.gkey) h += `<button class="btn block" data-act="google">${r.g ? 'Refresh Google info' : 'Get phone, hours & address from Google'}</button>`;
+    h += `<div class="two" style="margin-top:12px">
    <button class="btn" data-act="move">Move pin</button>
    <button class="btn danger" data-act="hide">${b.id.startsWith('c') ? 'Delete' : 'Not a business'}</button></div>
   ${b.id.startsWith('c') ? '' : `<div class="small" style="margin-top:8px">Source: OpenStreetMap ${esc(b.id)}</div>`}`;
+  }
   $('#sheetBody').innerHTML = h;
+}
+// ---------- walkthrough photos ----------
+async function shrinkPhoto(file, max, q) {
+  const bmp = await createImageBitmap(file);
+  const sc = Math.min(1, max / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', q);
+}
+async function addPhotos(id, files) {
+  const msg = () => $('#photoMsg');
+  let n = 0;
+  for (const f of files) {
+    n++; if (msg()) msg().textContent = `Saving photo ${n} of ${files.length}…`;
+    try {
+      const full = await shrinkPhoto(f, 1600, 0.78), thumb = await shrinkPhoto(f, 260, 0.6);
+      const t = Date.now() + n, path = 'photos/' + id + '/' + t + '.jpg';
+      await kv.set('card:' + path, full); await addPendingPhoto(path);
+      const r = touch(id); r.photos = (r.photos || []).concat({ t, path, thumb, caption: '' });
+    } catch (err) { toast('Could not read one of the photos'); }
+  }
+  await commit(); renderSheet({ tab: 'notes' }); toast(files.length === 1 ? 'Photo added' : files.length + ' photos added');
+}
+function showPhoto(id, t) {
+  const r = rec(id); const p = (r.photos || []).find(x => String(x.t) === String(t)); if (!p) return;
+  showModal(`<h3>Walkthrough photo</h3><p class="small">${fmtWhen(p.t)}</p>
+    <img id="phImg" src="${p.thumb}" style="width:100%;border-radius:10px;background:#eee"><p class="small" id="phMsg">Loading full size…</p>
+    <div class="field"><label>Caption</label><input id="phCap" value="${esc(p.caption || '')}" placeholder="Panel location, camera spot, back door…"></div>
+    <div class="two"><button class="btn danger" id="phDel">Delete photo</button><button class="btn primary" id="phDone">Done</button></div>`);
+  (async () => {
+    try {
+      let src = await kv.get('card:' + p.path);
+      if (!src && syncReady()) { const res = await gh(p.path, { headers: { Accept: 'application/vnd.github.raw+json' } }); if (res.ok) src = URL.createObjectURL(await res.blob()); }
+      if (src) { $('#phImg').src = src; $('#phMsg').remove(); } else $('#phMsg').textContent = 'Full size is only on the device that took it (it uploads once that device syncs).';
+    } catch (e) { const m = $('#phMsg'); if (m) m.textContent = 'Could not load the full-size photo.'; }
+  })();
+  $('#phDone').onclick = () => { const cap = $('#phCap').value.trim(); if (cap !== (p.caption || '')) { p.caption = cap; touch(id); commit(); } hideModal(); renderSheet({ tab: 'notes' }); };
+  $('#phDel').onclick = () => { const rr = touch(id); rr.photos = rr.photos.filter(x => x !== p); commit(); hideModal(); renderSheet({ tab: 'notes' }); toast('Photo deleted'); };
 }
 function customFieldHtml(f, r) {
   const v = (r.custom || {})[f.id];
@@ -590,6 +650,8 @@ $('#sheet').addEventListener('click', e => {
     $('#mCancel').onclick = hideModal;
   }
   if (act === 'move') startPlace(id);
+  if (t.dataset.stab) { sheetTab = t.dataset.stab; renderSheet(); return; }
+  if (t.dataset.pv) { showPhoto(id, t.dataset.pv); return; }
   if (act === 'next') {
     const b0 = bizIndex.get(id), today = todayStr();
     let best = null, bd = Infinity;
@@ -606,8 +668,15 @@ $('#sheet').addEventListener('click', e => {
   }
   if (t.dataset.photo) showCardPhoto(t.dataset.photo);
 });
+let notesTimer;
+$('#sheet').addEventListener('input', e => {
+  const el = e.target; if (!current || el.dataset.f !== 'notes') return;
+  clearTimeout(notesTimer); const id = current, v = el.value;
+  notesTimer = setTimeout(() => { const r = touch(id); r.notes = v.trim(); saveLocal(); scheduleSync(); }, 700);
+});
 $('#sheet').addEventListener('change', e => {
   const el = e.target; if (!current) return;
+  if (el.dataset.photos !== undefined && el.files && el.files.length) { const fs = [...el.files]; el.value = ''; addPhotos(current, fs); return; }
   if (el.dataset.scan !== undefined && el.files && el.files[0]) { const f = el.files[0]; el.value = ''; scanForBiz(current, f); return; }
   if (el.id === 'fuPick') { const r = touch(current); r.followUp = el.value; commit(); renderSheet(); return; }
   if (el.dataset.f) { const r = touch(current); r[el.dataset.f] = el.value.trim(); commit(); }
@@ -1086,7 +1155,7 @@ $('#sheet').addEventListener('click', e => {
     const r = touch(nid);
     r.notes = `From permit ${p.permit || ''}${p.date ? ' (' + p.date + ')' : ''}: ${[p.type, p.desc].filter(Boolean).join(' – ')}${p.value ? '. Value ' + p.value : ''}${p.contractor ? '. Contractor: ' + p.contractor + (p.cphone ? ' ' + p.cphone : '') + (p.cemail ? ' ' + p.cemail : '') : ''}${p.owner ? '. Owner: ' + p.owner : ''}`;
     p.status = 'converted'; p.bizId = nid; p.updatedAt = state.updatedAt = Date.now();
-    currentPermit = null; reindex(); commit(); openBiz(nid, { openDetails: true }); toast('Added as a prospect. Rename it once you know the business name.');
+    currentPermit = null; reindex(); commit(); openBiz(nid, { tab: 'notes' }); toast('Added as a prospect. Rename it once you know the business name.');
   }
 });
 function permitsListHtml() {
@@ -1224,8 +1293,9 @@ function dayEntries(day) {
     const r = state.records[id], b = bizIndex.get(id); if (!b) continue;
     const vs = (r.visits || []).filter(v => ymd(new Date(v.t)) === day);
     const cards = (r.cards || []).filter(c => ymd(new Date(c.t)) === day);
-    if (!vs.length && !cards.length) continue;
-    out.push({ b, r, vs, cards, first: Math.min(...vs.map(v => v.t), ...cards.map(c => c.t)) });
+    const pics = (r.photos || []).filter(p => ymd(new Date(p.t)) === day);
+    if (!vs.length && !cards.length && !pics.length) continue;
+    out.push({ b, r, vs, cards, pics, first: Math.min(...vs.map(v => v.t), ...cards.map(c => c.t), ...pics.map(p => p.t)) });
   }
   return out.sort((a, b) => a.first - b.first);
 }
@@ -1244,6 +1314,7 @@ function entryText(e) {
   if (r.dealInstall || r.dealMonthly) L.push('Deal: ' + [r.dealInstall && money(r.dealInstall) + ' install', r.dealMonthly && money(r.dealMonthly) + '/mo'].filter(Boolean).join(', '));
   if (r.followUp) L.push('Follow-up: ' + fmtDate(r.followUp));
   if (r.notes) L.push('Notes: ' + r.notes);
+  if (e.pics && e.pics.length) L.push(`Walkthrough photos: ${e.pics.length}` + (e.pics.some(p => p.caption) ? ' (' + e.pics.filter(p => p.caption).map(p => p.caption).join('; ') + ')' : ''));
   return L.join('\n');
 }
 function renderLog() {
@@ -1514,7 +1585,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v16 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v17 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -1616,7 +1687,7 @@ function showHelp() {
    <h4>Pin colors</h4>
    <ul class="plain">${STATUSES.map(s => `<li><span class="pill" style="--c:${s.color}">${s.label}</span> ${s.hint}</li>`).join('')}<li><span class="pill" style="--c:#f97316">Permit</span> Something's being built or remodeled</li></ul>
    <h4>At the door</h4>
-   <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, fill in the decision maker, or <b>Scan a business card</b> to fill it in for you.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
+   <ul><li>Tap a pin (or a name in <b>Nearby</b>) to open the business.</li><li>Tap what happened under <b>Log this visit</b>. It saves the time. Tapped the wrong one? Hit <b>Undo</b>.</li><li>Set a follow-up date, or <b>Scan a business card</b> to fill in the contact for you.</li><li><b>Notes &amp; photos</b> tab: general notes and walkthrough pictures for that business.</li><li><b>Next closest</b> jumps to the nearest place you haven't hit yet.</li></ul>
    <h4>Planning</h4>
    <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li><li><b>Landlords &amp; property managers</b> (bottom of Plan) lists who owns the most commercial buildings in the territory. On any business, <b>Who owns this property?</b> pulls the owner from county records.</li></ul>
    <h4>Good to know</h4>
