@@ -835,6 +835,7 @@ function planHtml() {
 
 // ---------- permits ----------
 let currentPermit = null;
+let permitMsg = { text: '', err: false };
 const TERR_CITIES = /\b(peoria|surprise|el mirage|sun city west|sun city|youngtown)\b/i;
 const RES_RE = /\b(residential|single[- ]?family|sfr|sfd|pool|spa|patio|solar|pv|dwelling|duplex|fence|wall|re-?roof|reroof|water heater|mobile home|manufactured|casita|garage conversion|carport|res\b|addition-res)/i;
 const COM_RE = /\b(commercial|tenant|t\.?i\.?\b|retail|office|restaurant|industrial|warehouse|shell|business|church|school|medical|clinic|dental|hotel|storage|bank|store|suite|ste\b|com\b|comm\b|multi-?family|apartment|assembly|mercantile)/i;
@@ -863,31 +864,38 @@ async function importPermits(file, commercialOnly) {
       addr: findCol(H, /address|location|site/, taken),
       city: findCol(H, /city|town|community/, taken),
       zip: findCol(H, /zip/, taken),
-      type: findCol(H, /type|class|categor|use|occupancy/, taken),
-      desc: findCol(H, /desc|scope|work|project|name/, taken),
+      desc: findCol(H, /desc|scope/, taken),
+      type: findCol(H, /type|categor|occupancy/, taken),
+      work: findCol(H, /work class|class|use/, taken),
       value: findCol(H, /valu|cost|amount/, taken),
       owner: findCol(H, /owner|applicant|tenant|business|dba/, taken),
+      cphone: findCol(H, /contractor.*phone|phone/, taken),
+      cemail: findCol(H, /contractor.*email|email/, taken),
       contractor: findCol(H, /contractor|builder/, taken),
       parcel: findCol(H, /parcel|apn/, taken),
     };
+    if (col.desc < 0) col.desc = findCol(H, /work|project|name/, taken);
     if (col.addr < 0) continue;
     const g = (row, k) => col[k] >= 0 ? String(row[col[k]] || '').trim() : '';
     for (const row of rows.slice(hi + 1)) {
-      const addr = g(row, 'addr'); if (!addr) continue;
+      const addrFull = g(row, 'addr'); if (!addrFull) continue;
+      const addr = addrFull.split(/\n/)[0].trim();
       seen++;
-      const text = [g(row, 'type'), g(row, 'desc')].join(' ');
-      let zip = g(row, 'zip').slice(0, 5); if (!/^\d{5}$/.test(zip)) { const m = (addr + ' ' + g(row, 'city')).match(/\b(85\d{3})\b/); zip = m ? m[1] : ''; }
+      const text = [g(row, 'type'), g(row, 'work'), g(row, 'desc')].join(' ');
+      let zip = g(row, 'zip').slice(0, 5); if (!/^\d{5}$/.test(zip)) { const m = (addrFull + ' ' + g(row, 'city')).match(/\b(85\d{3})\b/); zip = m ? m[1] : ''; }
       const city = g(row, 'city');
       const myZips = TERRITORY.features.map(f => f.properties.zip);
       if (zip && !myZips.includes(zip)) { skippedArea++; continue; }
       if (!zip && city && !TERR_CITIES.test(city)) { skippedArea++; continue; }
-      const isRes = RES_RE.test(text) && !COM_RE.test(text);
+      const tcol = g(row, 'type');
+      // trust an explicit Residential/Commercial permit type when the file has one
+      const isRes = /residential/i.test(tcol) ? true : /commercial/i.test(tcol) ? false : (RES_RE.test(text) && !COM_RE.test(text));
       if (commercialOnly && isRes) { skippedRes++; continue; }
       const permit = g(row, 'permit');
       const id = 'p' + (permit ? permit.replace(/[^A-Za-z0-9]/g, '') : (addr + text).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40));
       const old = state.permits[id];
-      state.permits[id] = { ...(old || {}), id, permit, date: g(row, 'date'), addr, city, zip, type: g(row, 'type'), desc: g(row, 'desc'), value: g(row, 'value'),
-        owner: g(row, 'owner'), contractor: g(row, 'contractor'), parcel: g(row, 'parcel'), kind: isRes ? 'residential' : COM_RE.test(text) ? 'commercial' : 'other',
+      state.permits[id] = { ...(old || {}), id, permit, date: g(row, 'date'), addr, city, zip, type: [g(row, 'type'), g(row, 'work')].filter(Boolean).join(' · '), desc: g(row, 'desc'), value: g(row, 'value'),
+        owner: g(row, 'owner'), contractor: g(row, 'contractor'), cphone: g(row, 'cphone'), cemail: g(row, 'cemail'), parcel: g(row, 'parcel'), kind: isRes ? 'residential' : (/commercial/i.test(tcol) || COM_RE.test(text)) ? 'commercial' : 'other',
         status: (old && old.status) || 'new', importedAt: (old && old.importedAt) || Date.now(), updatedAt: Date.now() };
       if (!old) added++;
     }
@@ -944,7 +952,7 @@ function openPermit(id, fly) {
   const row = (k, v) => v ? `<div class="brow"><span class="l" style="width:92px;color:#64748b">${k}</span><span style="flex:1">${esc(v)}</span></div>` : '';
   $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close">✕</button></div>
    <div class="meta"><span class="pill" style="background:#fdba74">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
-   ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', p.value)}${row('Owner', p.owner)}${row('Contractor', p.contractor)}${row('Parcel', p.parcel)}
+   ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', p.value)}${row('Owner', p.owner)}${row('Contractor', p.contractor)}${row('GC phone', p.cphone)}${row('GC email', p.cemail)}${row('Parcel', p.parcel)}
    ${p.lat == null ? '<p class="small">Not placed on the map yet' + (p.geoFail ? ' (address not found)' : '') + '.</p>' : ''}
    <div class="actions"><a href="${nav}" target="_blank" rel="noopener">Directions</a><a href="https://www.google.com/search?q=${encodeURIComponent((p.contractor || p.owner || p.addr) + ' ' + (p.city || 'AZ'))}" target="_blank" rel="noopener">Google it</a></div>
    <p class="small">Something's being built or remodeled here. Stop by while it's under construction and ask who's handling security, cameras, access control and fire.</p>
@@ -963,7 +971,7 @@ $('#sheet').addEventListener('click', e => {
     const z = zipOf(lat, lon); const nid = 'c' + Date.now().toString(36);
     state.custom[nid] = { id: nid, name: permitTitle(p), cat: 'Other', type: 'under construction', lat, lon, addr: p.addr, city: p.city || (z ? z.city : ''), zip: p.zip || (z ? z.zip : ''), phone: '', web: '', hours: '', updatedAt: Date.now() };
     const r = touch(nid);
-    r.notes = `From permit ${p.permit || ''}${p.date ? ' (' + p.date + ')' : ''}: ${[p.type, p.desc].filter(Boolean).join(' – ')}${p.value ? '. Value ' + p.value : ''}${p.contractor ? '. Contractor: ' + p.contractor : ''}${p.owner ? '. Owner: ' + p.owner : ''}`;
+    r.notes = `From permit ${p.permit || ''}${p.date ? ' (' + p.date + ')' : ''}: ${[p.type, p.desc].filter(Boolean).join(' – ')}${p.value ? '. Value ' + p.value : ''}${p.contractor ? '. Contractor: ' + p.contractor + (p.cphone ? ' ' + p.cphone : '') + (p.cemail ? ' ' + p.cemail : '') : ''}${p.owner ? '. Owner: ' + p.owner : ''}`;
     p.status = 'converted'; p.bizId = nid; p.updatedAt = state.updatedAt = Date.now();
     currentPermit = null; reindex(); commit(); openBiz(nid, { openDetails: true }); toast('Added as a prospect. Rename it once you know the business name.');
   }
@@ -1048,7 +1056,7 @@ function renderSettings() {
     <p class="small">Each week, download the county's permit spreadsheet from <a href="https://www.maricopa.gov/Archive.aspx?AMID=128" target="_blank" rel="noopener">maricopa.gov weekly permit reports</a> (covers Sun City and Sun City West), or any permit list you get from a city, and drop it here. It keeps the ones in your zips and puts them on the map as orange pins.</p>
     <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="pmCom" checked style="width:22px;height:22px"> Commercial only (skip pools, patios, re-roofs)</label>
     <label class="btn block primary" style="text-align:center">Import permit spreadsheet<input type="file" id="pmFile" accept=".xlsx,.xls,.csv" hidden></label>
-    <div id="pmMsg" class="small"></div><div id="pmGeo" class="small"></div>
+    <div id="pmMsg" class="small" style="${permitMsg.err ? 'color:#e5484d' : ''}">${esc(permitMsg.text)}</div><div id="pmGeo" class="small"></div>
     <p class="small">${Object.keys(state.permits || {}).length} permits saved · ${livePermits().length} new · ${Object.values(state.permits || {}).filter(p => p.status === 'new' && p.lat == null && !p.geoFail).length} still being placed on the map</p>
   </div>
   <div class="card"><h3>Cooling off</h3>
@@ -1075,7 +1083,7 @@ function renderSettings() {
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
   <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v6</p>`;
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v7</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
@@ -1105,10 +1113,11 @@ $('#settings').addEventListener('change', async e => {
     const msg = $('#pmMsg'); msg.textContent = 'Reading spreadsheet…'; msg.style.color = '';
     try {
       const r = await importPermits(f, $('#pmCom').checked);
-      msg.textContent = `Read ${r.seen} permits. ${r.added} new ones in your zips. Skipped ${r.skippedArea} outside your territory${$('#pmCom').checked ? ' and ' + r.skippedRes + ' residential' : ''}.`;
-      if (!r.seen) { msg.textContent = "Couldn't find an address column in that file. Send me a screenshot of the top of the spreadsheet and I'll adjust it."; msg.style.color = '#e5484d'; }
+      permitMsg = { text: `Read ${r.seen} permits. ${r.added} new in your zips. Skipped ${r.skippedArea} outside your territory${$('#pmCom').checked ? ' and ' + r.skippedRes + ' residential in your zips' : ''}.${!r.added && r.skippedRes ? ' No commercial permits in your area this time.' : ''}`, err: false };
+      if (!r.seen) permitMsg = { text: "Couldn't find the permit rows in that file (no address column found). Send me the file and I'll adjust it.", err: true };
+      msg.textContent = permitMsg.text; msg.style.color = permitMsg.err ? '#e5484d' : '';
       geocodePermits(m => { const el = $('#pmGeo'); if (el) el.textContent = m; });
-    } catch (err) { msg.textContent = 'Could not read that file: ' + err.message; msg.style.color = '#e5484d'; }
+    } catch (err) { permitMsg = { text: 'Could not read that file: ' + err.message, err: true }; msg.textContent = permitMsg.text; msg.style.color = '#e5484d'; }
   }
   if (e.target.id === 'impJson') {
     const f = e.target.files[0]; if (!f) return;
