@@ -122,7 +122,7 @@ async function loadBusinesses(refreshAll_) {
     toast('Businesses loaded');
   } catch (err) {
     const left = zipsLeft();
-    setLoadMsg(`Stopped: ${err.message}. Everything loaded so far is saved. Tap the button to pick up the ${left} zip${left === 1 ? '' : 's'} left.`, true);
+    setLoadMsg(/failed to fetch|networkerror|load failed/i.test(err.message) ? `Couldn't reach OpenStreetMap. This network (often a work or office Wi-Fi) may be blocking it. Try on your phone with Wi-Fi off, or at home. Once it loads on one device, your other devices get the list through cloud backup.` : `Stopped: ${err.message}. Everything loaded so far is saved. Tap the button to pick up the ${left} zip${left === 1 ? '' : 's'} left.`, true);
   } finally {
     loadStatus.running = false; try { wake && wake.release(); } catch (e) {}
     reindex(); refreshAll(); renderSettingsIfOpen();
