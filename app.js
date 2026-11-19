@@ -53,11 +53,11 @@ let state = blankState();     // synced data (your knocks)
 let settings = {};            // local only (token etc.)
 let me = null;                // {lat, lon, acc}
 let current = null;           // id of business open in sheet
-let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', planOnly: false, permits: true, customers: true };
+let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', planOnly: false, permits: true, customers: true, leases: true };
 let lastUndo = null;
 let dirty = false;
 
-function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, customers: {}, plan: null, prefs: {}, updatedAt: 0 }; }
+function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, customers: {}, leases: {}, plan: null, prefs: {}, updatedAt: 0 }; }
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -295,7 +295,7 @@ async function pullBizList(force) {
 function mergeInto(local, remote) {
   if (!remote) return local;
   const m = blankState();
-  for (const key of ['records', 'custom', 'permits', 'customers']) {
+  for (const key of ['records', 'custom', 'permits', 'customers', 'leases']) {
     const ids = new Set([...Object.keys(local[key] || {}), ...Object.keys(remote[key] || {})]);
     for (const id of ids) {
       const a = (local[key] || {})[id], b = (remote[key] || {})[id];
@@ -350,7 +350,7 @@ let map, renderer, markers = new Map(), meMarker, meCircle, zipLayer, baseStreet
 function renderLegend() {
   const el = $('#legend'); if (!el) return;
   const open = settings.legendOpen !== false;
-  el.innerHTML = open ? `<button class="lg-x" id="lgToggle" aria-label="Hide key">Key ▾</button>${STATUSES.map(s => `<div><i style="background:${s.color}"></i>${s.label}</div>`).join('')}<div><i style="background:#f97316;border:2px solid #fff;box-shadow:0 0 0 1px #f97316"></i>Permit</div><div><i style="background:#ef5b5f;opacity:.3"></i>Cooling off</div><div><i style="background:#fff;border:2px solid #ee2e24"></i>Bay Alarm customer</div>` : '<button class="lg-x" id="lgToggle">Key ▸</button>';
+  el.innerHTML = open ? `<button class="lg-x" id="lgToggle" aria-label="Hide key">Key ▾</button>${STATUSES.map(s => `<div><i style="background:${s.color}"></i>${s.label}</div>`).join('')}<div><i style="background:#f97316;border:2px solid #fff;box-shadow:0 0 0 1px #f97316"></i>Permit</div><div><i style="background:#ef5b5f;opacity:.3"></i>Cooling off</div><div><i style="background:#fff;border:2px solid #ee2e24"></i>Bay Alarm customer</div><div><i style="background:#0891b2;border-radius:3px"></i>For lease</div>` : '<button class="lg-x" id="lgToggle">Key ▸</button>';
   $('#lgToggle').onclick = () => { settings.legendOpen = !open; saveLocalSoon(); renderLegend(); };
 }
 function initMap() {
@@ -386,6 +386,7 @@ function drawMarkers() {
     else { m.setStyle(style); m.setRadius(style.radius); m.setLatLng([b.lat, b.lon]); }
   }
   drawPermits();
+  drawLeases();
   labeled.forEach(id => { if (!markers.has(id)) labeled.delete(id); });
   updateLabels();
   updateMapStats();
@@ -459,12 +460,12 @@ function filtered() {
     return true;
   });
 }
-function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size || filters.planOnly || !filters.permits || !filters.customers; }
+function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size || filters.planOnly || !filters.permits || !filters.customers || !filters.leases; }
 
 // ---------- business sheet ----------
 function openBiz(id, opts = {}) {
   const b = bizIndex.get(id); if (!b) return;
-  currentPermit = null;
+  currentPermit = null; currentLease = null;
   if (current !== id) sheetTab = 'visit';
   const prev = current; current = id;
   if (prev && markers.get(prev)) drawMarkers(); else drawMarkers();
@@ -472,7 +473,7 @@ function openBiz(id, opts = {}) {
   $('#sheet').classList.remove('hidden');
   if (opts.fly) { switchView('map'); map.setView([b.lat, b.lon], Math.max(map.getZoom(), 17)); }
 }
-function closeSheet() { current = null; currentPermit = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
+function closeSheet() { current = null; currentPermit = null; currentLease = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
 let sheetTab = 'visit';
 function renderSheet(opts = {}) {
   const id = current, b = bizIndex.get(id); if (!b) return closeSheet();
@@ -722,14 +723,16 @@ let placing = null;
 function startPlace(id) {
   placing = id || 'new';
   $('#sheet').classList.add('hidden'); switchView('map');
-  if (id) { const b = bizIndex.get(id); map.setView([b.lat, b.lon], 18); }
+  if (id && id.startsWith('lease:')) { const l = state.leases[id.slice(6)]; map.setView([l.lat, l.lon], 18); }
+  else if (id) { const b = bizIndex.get(id); map.setView([b.lat, b.lon], 18); }
   else if (me) map.setView([me.lat, me.lon], 18);
   $('#placeBanner').classList.remove('hidden'); $('#crosshair').classList.remove('hidden');
 }
 function endPlace() { placing = null; $('#placeBanner').classList.add('hidden'); $('#crosshair').classList.add('hidden'); }
-$('#placeCancel').onclick = () => { const id = placing; endPlace(); if (id && id !== 'new') openBiz(id); };
+$('#placeCancel').onclick = () => { const id = placing; endPlace(); if (id && id.startsWith('lease:')) openLease(id.slice(6)); else if (id && id !== 'new') openBiz(id); };
 $('#placeOk').onclick = () => {
   const c = map.getCenter(); const id = placing; endPlace();
+  if (id.startsWith('lease:')) { const l = state.leases[id.slice(6)]; l.lat = +c.lat.toFixed(6); l.lon = +c.lng.toFixed(6); l.updatedAt = state.updatedAt = Date.now(); commit(); openLease(l.id); return; }
   if (id !== 'new') {
     const b = bizIndex.get(id);
     if (id.startsWith('c')) { b.lat = +c.lat.toFixed(6); b.lon = +c.lng.toFixed(6); b.updatedAt = Date.now(); }
@@ -893,7 +896,7 @@ function renderFollow() {
   for (const [name, list, warn] of groups) if (list.length) h += `<h2 class="sec ${warn ? 'warn' : ''}">${name} (${list.length})</h2>` + list.map(x => item(x, fmtDate(x.r.followUp))).join('');
   if (soon.length) h += `<h2 class="sec">Contracts ending in the next 6 months (${soon.length})</h2>` + soon.map(x => item(x, esc(x.r.provider || '') + '<br>' + x.end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))).join('');
   h += permitsListHtml();
-  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + landlordsHtml();
+  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + leasesHtml() + landlordsHtml();
   const due = groups[0][1].length + groups[1][1].length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
 }
@@ -910,6 +913,7 @@ $('#follow').addEventListener('click', e => {
   if (t.id === 'pmNoise') { settings.showNoisePermits = !settings.showNoisePermits; saveLocal(); renderFollow(); drawMarkers(); return; }
   const lg = t.closest('[data-ll-group]'); if (lg) return showLandlordGroup(+lg.dataset.llGroup);
   const pm = t.closest('[data-permit]'); if (pm) return openPermit(pm.dataset.permit, true);
+  const ls = t.closest('[data-lease]'); if (ls) { const l = state.leases[ls.dataset.lease]; switchView('map'); map.setView([l.lat, l.lon], 17); return openLease(l.id); }
   const it = t.closest('.item'); if (it && it.dataset.id) openBiz(it.dataset.id, { fly: false });
 });
 
@@ -1331,6 +1335,7 @@ function renderLog() {
   const day = logDate || todayStr(), es = dayEntries(day);
   const counts = {}; es.forEach(e => e.vs.forEach(v => counts[v.s] = (counts[v.s] || 0) + 1));
   const isToday = day === todayStr();
+  const leasesDay = liveLeases().filter(l => ymd(new Date(l.t)) === day);
   $('#stats').innerHTML = `<div class="page-title">Daily log</div><div class="page-sub">Everything you logged on a day, ready to copy into HubSpot.</div>
    <div class="card"><div style="display:flex;gap:8px;align-items:center">
      <button class="btn" data-day="-1" aria-label="Previous day">‹</button>
@@ -1345,7 +1350,8 @@ function renderLog() {
      <div style="margin-top:8px">${e.vs.map(v => `<span class="pill" style="--c:${S[v.s].color};margin:0 6px 4px 0">${new Date(v.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} · ${S[v.s].label}</span>`).join('')}</div>
      <pre class="logtext">${esc(entryText(e).split('\n').slice(1 + e.vs.length).join('\n')) || '<span class="small">No contact info or notes yet.</span>'}</pre>
      <button class="chip" data-open="${e.b.id}">Open business</button></div>`).join('')
-     : `<div class="empty"><b>Nothing logged ${isToday ? 'yet today' : 'this day'}</b>Visits you log show up here.</div>`}`;
+     : `<div class="empty"><b>Nothing logged ${isToday ? 'yet today' : 'this day'}</b>Visits you log show up here.</div>`}
+   ${leasesDay.length ? `<div class="card"><h3>For lease signs spotted (${leasesDay.length})</h3>${leasesDay.map(l => `<div class="brow"><span style="flex:1">${esc(l.addr || 'No address')}</span><span class="small">${esc([l.company, l.phone].filter(Boolean).join(' · '))}</span></div>`).join('')}</div>` : ''}`;
   const st = $('#stats');
   st.onclick = async ev => {
     const t = ev.target.closest('button'); if (!t) return;
@@ -1481,6 +1487,120 @@ function custBoxHtml(id) {
       : gaps.length ? `<p class="small" style="margin:6px 0 0">Not on: <b>${gaps.map(k => k.label).join(', ')}</b>. Upsell chance.</p>` : ''}</div>`;
 }
 
+// ---------- For Lease signs spotted while driving ----------
+let currentLease = null;
+const LEASE_COLOR = '#0891b2';
+function liveLeases() { return Object.values(state.leases || {}).filter(l => l.status !== 'gone'); }
+function addLeaseHere() {
+  const at = me ? { lat: me.lat, lon: me.lon } : (() => { const c = map.getCenter(); return { lat: c.lat, lon: c.lng }; })();
+  const id = 'l' + Date.now().toString(36);
+  const z = zipOf(at.lat, at.lon);
+  state.leases = state.leases || {};
+  state.leases[id] = { id, t: Date.now(), lat: +at.lat.toFixed(6), lon: +at.lon.toFixed(6), zip: z ? z.zip : '', city: z ? z.city : '', addr: '', company: '', phone: '', contact: '', notes: '', status: 'active', updatedAt: Date.now() };
+  state.updatedAt = Date.now(); commit();
+  switchView('map'); map.setView([at.lat, at.lon], Math.max(map.getZoom(), 17));
+  openLease(id);
+  toast(me ? 'For Lease marked where you are' : 'For Lease marked at the map center (no GPS)');
+  reverseAddress(id);
+}
+async function reverseAddress(id) {
+  const l = state.leases[id]; if (!l || l.addr) return;
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&zoom=18&lat=${l.lat}&lon=${l.lon}`, { headers: { Accept: 'application/json' } });
+    const j = await r.json(); const a = j.address || {};
+    const street = [a.house_number, a.road].filter(Boolean).join(' ');
+    if (street && state.leases[id]) { state.leases[id].addr = street; state.leases[id].updatedAt = Date.now(); commit(); if (currentLease === id) openLease(id); }
+  } catch (e) { /* no address, that's fine */ }
+}
+function drawLeases() {
+  const show = filters.leases && !filters.planOnly ? liveLeases() : [];
+  const ids = new Set(show.map(l => l.id));
+  for (const [id, m] of leaseMarkers) if (!ids.has(id)) { map.removeLayer(m); leaseMarkers.delete(id); }
+  for (const l of show) {
+    const sel = currentLease === l.id;
+    let m = leaseMarkers.get(l.id);
+    const html = `<div class="lease-pin${sel ? ' sel' : ''}">L</div>`;
+    if (!m) { m = L.marker([l.lat, l.lon], { icon: L.divIcon({ className: '', html, iconSize: [24, 24], iconAnchor: [12, 12] }), zIndexOffset: 500 }).addTo(map); m.on('click', () => openLease(l.id)); leaseMarkers.set(l.id, m); }
+    else { m.setLatLng([l.lat, l.lon]); m.setIcon(L.divIcon({ className: '', html, iconSize: [24, 24], iconAnchor: [12, 12] })); }
+  }
+}
+const leaseMarkers = new Map();
+function openLease(id) {
+  const l = state.leases[id]; if (!l) return;
+  current = null; currentPermit = null; currentLease = id;
+  const nav = 'https://www.google.com/maps/dir/?api=1&destination=' + l.lat + ',' + l.lon;
+  const f = (k, label, type, ph) => `<div class="field"><label>${label}</label><input data-lf="${k}" type="${type || 'text'}" value="${esc(l[k] || '')}" placeholder="${ph || ''}"></div>`;
+  $('#sheetBody').innerHTML = `<div class="sh-title"><h3>For Lease${l.addr ? ': ' + esc(l.addr) : ''}</h3><button class="closex" data-lact="close" aria-label="Close">${ICON('x')}</button></div>
+   <div class="meta"><span class="pill" style="--c:${LEASE_COLOR}">For lease</span> Spotted ${fmtWhen(l.t)}${l.zip ? ' · ' + esc(l.zip) + ' ' + esc(l.city || '') : ''}</div>
+   <div class="actions"><a href="${nav}" target="_blank" rel="noopener">${ICON('nav')}Directions</a>${l.phone ? `<a href="tel:${esc(l.phone.replace(/[^\d+]/g, ''))}">${ICON('phone')}Call</a>` : ''}<a href="https://www.google.com/search?q=${encodeURIComponent((l.company || 'for lease') + ' ' + (l.addr || '') + ' ' + (l.city || 'AZ'))}" target="_blank" rel="noopener">${ICON('search')}Google</a></div>
+   <label class="btn block primary">${ICON('camera')}Snap the sign (fills in phone &amp; company)<input type="file" accept="image/*" data-leasesign hidden></label>
+   <div id="leaseMsg" class="small"></div>
+   ${l.thumb ? `<img src="${l.thumb}" style="width:100%;border-radius:10px;margin:6px 0" alt="Sign photo">` : ''}
+   <div class="two">${f('phone', 'Phone on the sign', 'tel', '(602) 555-1234')}${f('company', 'Management / broker', 'text', 'CBRE, Vestar…')}</div>
+   ${f('contact', 'Contact name')}${f('addr', 'Address', 'text', 'Street address')}
+   <div class="field"><label>Notes</label><textarea data-lf="notes" placeholder="Size, which suite, how long it's been empty…">${esc(l.notes || '')}</textarea></div>
+   <button class="btn block" data-lact="owner">Who owns this property?</button>
+   ${l.parcel ? `<div class="fu-box owner"><div class="lbl">Property owner</div><div>${esc(l.parcel.owner)}</div>${managerOf(l.parcel) ? `<div><b>Managed by:</b> ${esc(managerOf(l.parcel))}</div>` : ''}<div class="small">${esc([l.parcel.mail, l.parcel.mailCity].filter(Boolean).join(', '))}</div></div>` : ''}
+   <div class="two" style="margin-top:10px"><button class="btn" data-lact="move">Move pin</button><button class="btn danger" data-lact="gone">Leased / remove</button></div>
+   <p class="small">Tip: mark it with one tap while driving, fill in the rest when you're parked.</p>`;
+  $('#sheet').classList.remove('hidden'); drawMarkers();
+}
+async function readLeaseSign(id, file) {
+  const msg = $('#leaseMsg'); if (msg) msg.textContent = 'Reading the sign…';
+  try {
+    const res = await CardScan.read(file, m => { const el = $('#leaseMsg'); if (el) el.textContent = m; });
+    const lines = res.lines.filter(x => !/\b(for\s+lease|for\s+sale|available|now\s+leasing|lease|retail|office|space|sq\.?\s*ft|sf)\b/i.test(x.text));
+    const p = CardScan.parse(lines, '');
+    const l = state.leases[id]; if (!l) return;
+    if (!l.phone) l.phone = p.phone || p.cell || '';
+    if (!l.company) l.company = (p.company || '').replace(/[^\w&.,'\- ]/g, '').trim();
+    if (!l.contact && p.name) l.contact = p.name;
+    if (p.web && !l.notes) l.notes = p.web;
+    l.thumb = await shrinkPhoto(file, 700, 0.7); l.updatedAt = state.updatedAt = Date.now();
+    await commit(); openLease(id);
+    toast(l.phone || l.company ? 'Got it. Check the phone and company.' : "Couldn't read much. Type it in.");
+  } catch (err) { if ($('#leaseMsg')) $('#leaseMsg').textContent = 'Could not read the sign: ' + err.message; }
+}
+$('#sheet').addEventListener('click', async e => {
+  const t = e.target.closest('[data-lact]'); if (!t || !currentLease) return;
+  const id = currentLease, l = state.leases[id];
+  if (t.dataset.lact === 'close') { currentLease = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
+  if (t.dataset.lact === 'gone') { l.status = 'gone'; l.updatedAt = state.updatedAt = Date.now(); currentLease = null; $('#sheet').classList.add('hidden'); commit(); toast('Removed'); }
+  if (t.dataset.lact === 'move') { currentLease = null; $('#sheet').classList.add('hidden'); startPlace('lease:' + id); }
+  if (t.dataset.lact === 'owner') {
+    toast('Checking county records…');
+    try {
+      const j = await parcelQuery({ where: '1=1', geometry: `${l.lon},${l.lat}`, geometryType: 'esriGeometryPoint', inSR: '4326', spatialRel: 'esriSpatialRelIntersects', distance: '30', units: 'esriSRUnit_Meter', resultRecordCount: '5' });
+      const ps = (j.features || []).map(f => cleanParcel(f.attributes));
+      if (!ps.length) { toast('No parcel found here. Move the pin onto the building.'); return; }
+      ps.sort((x, y) => dist(l.lat, l.lon, x.lat, x.lon) - dist(l.lat, l.lon, y.lat, y.lon));
+      l.parcel = ps[0]; if (!l.addr && ps[0].addr) l.addr = ps[0].addr; l.updatedAt = state.updatedAt = Date.now(); commit(); openLease(id);
+    } catch (err) { toast('County lookup failed: ' + err.message); }
+  }
+});
+$('#sheet').addEventListener('change', e => {
+  const el = e.target; if (!currentLease) return;
+  const l = state.leases[currentLease]; if (!l) return;
+  if (el.dataset.leasesign !== undefined && el.files && el.files[0]) { const f = el.files[0]; el.value = ''; readLeaseSign(currentLease, f); return; }
+  if (el.dataset.lf) { l[el.dataset.lf] = el.value.trim(); l.updatedAt = state.updatedAt = Date.now(); commit(); }
+});
+function leasesHtml() {
+  const list = liveLeases().sort((a, b) => b.t - a.t);
+  if (!list.length) return '';
+  return `<h2 class="sec">For lease (${list.length})</h2>` + list.map(l => `<div class="item" data-lease="${l.id}"><span class="pin" style="background:${LEASE_COLOR}"></span>
+    <div class="main"><div class="nm">${esc(l.addr || 'For lease sign')}</div><div class="sub">${esc([l.company, l.phone].filter(Boolean).join(' · ') || 'No phone or company yet')}</div></div>
+    <div class="right">${new Date(l.t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div></div>`).join('');
+}
+function chooseAdd() {
+  showModal(`<h3>Add to the map</h3>
+   <button class="btn block primary" id="addLease" style="justify-content:flex-start;padding:14px">For Lease sign here<span class="small" style="color:#fff;opacity:.85;margin-left:auto">one tap</span></button>
+   <button class="btn block" id="addBiz" style="justify-content:flex-start;padding:14px">A business that's missing</button>
+   <button class="btn block ghost" id="addCancel">Cancel</button>`);
+  $('#addLease').onclick = () => { hideModal(); addLeaseHere(); };
+  $('#addBiz').onclick = () => { hideModal(); startPlace(null); };
+  $('#addCancel').onclick = hideModal;
+}
+
 // ---------- stats ----------
 function renderStats() {
   if (logOpen) return renderLog();
@@ -1595,7 +1715,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v18 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v19 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -1677,13 +1797,13 @@ $('#filterBtn').onclick = () => {
    <h2 class="sec" style="margin-left:0">Status</h2><div class="checkgrid">${STATUSES.map(s => chip(filters.statuses, s.k, s.label, s.color)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Business type</h2><div class="checkgrid">${CATS.map(c => chip(filters.cats, c, c)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Zip</h2><div class="checkgrid">${zips.map(z => chip(filters.zips, z.zip, z.zip + ' ' + z.city)).join('')}</div>
-   <h2 class="sec" style="margin-left:0">Other</h2><div class="checkgrid"><button class="chip ${filters.permits ? 'on' : ''}" data-tog="permits"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f97316;margin-right:5px"></span>Permits</button><button class="chip ${filters.customers ? 'on' : ''}" data-tog="customers"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ee2e24;margin-right:5px"></span>Customers</button>${state.plan && state.plan.date === todayStr() ? `<button class="chip ${filters.planOnly ? 'on' : ''}" data-tog="planOnly">Today's plan only</button>` : ''}</div>
+   <h2 class="sec" style="margin-left:0">Other</h2><div class="checkgrid"><button class="chip ${filters.permits ? 'on' : ''}" data-tog="permits"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f97316;margin-right:5px"></span>Permits</button><button class="chip ${filters.customers ? 'on' : ''}" data-tog="leases"><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:#0891b2;margin-right:5px"></span>For lease</button><button class="chip ${filters.customers ? 'on' : ''}" data-tog="customers"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#fff;border:2px solid #ee2e24;margin-right:5px"></span>Customers</button>${state.plan && state.plan.date === todayStr() ? `<button class="chip ${filters.planOnly ? 'on' : ''}" data-tog="planOnly">Today's plan only</button>` : ''}</div>
    <div class="two" style="margin-top:14px"><button class="btn ghost" id="fClear">Clear all</button><button class="btn primary" id="fDone">Done</button></div>`);
   $('#modalBody').onclick = e => {
     const t = e.target.closest('button'); if (!t) return;
     if (t.dataset.set) { const set = t.dataset.set === 's' ? filters.statuses : t.dataset.set === 'c' ? filters.cats : filters.zips; set.has(t.dataset.val) ? set.delete(t.dataset.val) : set.add(t.dataset.val); t.classList.toggle('on'); }
     if (t.dataset.tog) { filters[t.dataset.tog] = !filters[t.dataset.tog]; t.classList.toggle('on'); }
-    if (t.id === 'fClear') { filters.statuses.clear(); filters.cats.clear(); filters.zips.clear(); filters.planOnly = false; filters.permits = true; filters.customers = true; $('#modalBody').querySelectorAll('.chip.on').forEach(c => c.classList.remove('on')); const pc = $('#modalBody').querySelector('[data-tog=permits]'); if (pc) pc.classList.add('on'); }
+    if (t.id === 'fClear') { filters.statuses.clear(); filters.cats.clear(); filters.zips.clear(); filters.planOnly = false; filters.permits = true; filters.customers = true; filters.leases = true; $('#modalBody').querySelectorAll('.chip.on').forEach(c => c.classList.remove('on')); const pc = $('#modalBody').querySelector('[data-tog=permits]'); if (pc) pc.classList.add('on'); }
     if (t.id === 'fDone') { hideModal(); $('#modalBody').onclick = null; }
     $('#filterDot').classList.toggle('hidden', !filterActive()); refreshAll();
   };
@@ -1701,7 +1821,7 @@ function showHelp() {
    <h4>Planning</h4>
    <ul><li><b>Plan</b> tab → <b>Plan my day</b> builds a route: follow-ups first, then the closest new doors. Open it in Google Maps 9 stops at a time.</li><li>Follow-ups that are due, contracts ending soon, and new permits all show up there too.</li><li><b>Landlords &amp; property managers</b> (bottom of Plan) lists who owns the most commercial buildings in the territory. On any business, <b>Who owns this property?</b> pulls the owner from county records.</li></ul>
    <h4>Good to know</h4>
-   <ul><li>Booted somewhere? The pin fades and it's left out of plans for 60 days (change it in Settings → More).</li><li>A <b>red ring</b> means it's already a Bay Alarm customer. Open it to see their services and what they don't have yet.</li><li>Business missing from the map? Tap <b>+</b> on the map to add it.</li><li>The cloud icon at the top turns green when everything is backed up. Your data shows up on every device you connect.</li><li><b>Stats → Daily log</b> shows everything you did on a day, with a Copy button for each business so you can paste it into HubSpot.</li><li>Add it to your home screen so it opens like an app.</li></ul>
+   <ul><li>Booted somewhere? The pin fades and it's left out of plans for 60 days (change it in Settings → More).</li><li>A <b>red ring</b> means it's already a Bay Alarm customer. Open it to see their services and what they don't have yet.</li><li>Tap <b>+</b> on the map → <b>For Lease sign here</b> to mark an empty building where you are. Snap the sign and it reads the phone number and management company.</li><li>Business missing from the map? <b>+</b> → <b>A business that's missing</b>.</li><li>The cloud icon at the top turns green when everything is backed up. Your data shows up on every device you connect.</li><li><b>Stats → Daily log</b> shows everything you did on a day, with a Copy button for each business so you can paste it into HubSpot.</li><li>Add it to your home screen so it opens like an app.</li></ul>
    <button class="btn block primary" id="helpClose">Got it</button></div>`);
   $('#helpClose').onclick = hideModal;
 }
@@ -1744,7 +1864,7 @@ $('#layerBtn').onclick = () => {
   if (map.hasLayer(baseSat)) { map.removeLayer(baseSat); baseStreet.addTo(map); $('#layerBtn').textContent = 'Sat'; }
   else { map.removeLayer(baseStreet); baseSat.addTo(map); $('#layerBtn').textContent = 'Map'; }
 };
-$('#addBtn').onclick = () => startPlace(null);
+$('#addBtn').onclick = () => chooseAdd();
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') { saveLocal(); if (dirty) sync(); }
