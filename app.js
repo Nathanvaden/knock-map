@@ -52,11 +52,11 @@ let state = blankState();     // synced data (your knocks)
 let settings = {};            // local only (token etc.)
 let me = null;                // {lat, lon, acc}
 let current = null;           // id of business open in sheet
-let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '' };
+let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', planOnly: false, permits: true };
 let lastUndo = null;
 let dirty = false;
 
-function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], updatedAt: 0 }; }
+function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, plan: null, prefs: {}, updatedAt: 0 }; }
 
 const $ = s => document.querySelector(s);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -86,6 +86,9 @@ let bizIndex = new Map();
 function reindex() { bizIndex = new Map(allBiz().map(b => [b.id, b])); }
 function rec(id) { return state.records[id]; }
 function statusOf(id) { const r = rec(id); return (r && r.status) || 'new'; }
+function cooldownDays() { const p = state.prefs || {}; return p.cooldownDays != null ? +p.cooldownDays : 60; }
+function inCooldown(id) { const r = rec(id); if (!r || r.status !== 'booted' || !r.statusAt || !cooldownDays()) return 0; const until = r.statusAt + cooldownDays() * 864e5; return until > Date.now() ? until : 0; }
+function money(n) { n = +n || 0; return '$' + Math.round(n).toLocaleString(); }
 function touch(id) {
   if (!state.records[id]) state.records[id] = { visits: [] };
   const r = state.records[id]; r.updatedAt = Date.now(); state.updatedAt = r.updatedAt; return r;
@@ -291,7 +294,7 @@ async function pullBizList(force) {
 function mergeInto(local, remote) {
   if (!remote) return local;
   const m = blankState();
-  for (const key of ['records', 'custom']) {
+  for (const key of ['records', 'custom', 'permits']) {
     const ids = new Set([...Object.keys(local[key] || {}), ...Object.keys(remote[key] || {})]);
     for (const id of ids) {
       const a = (local[key] || {})[id], b = (remote[key] || {})[id];
@@ -302,6 +305,8 @@ function mergeInto(local, remote) {
   for (const id in m.hidden) if (m.hidden[id] === false) delete m.hidden[id];
   m.fields = (local.fieldsAt || 0) >= (remote.fieldsAt || 0) ? (local.fields || []) : (remote.fields || []);
   m.fieldsAt = Math.max(local.fieldsAt || 0, remote.fieldsAt || 0);
+  m.plan = ((local.plan && local.plan.at) || 0) >= ((remote.plan && remote.plan.at) || 0) ? (local.plan || null) : (remote.plan || null);
+  m.prefs = ((local.prefs || {}).at || 0) >= ((remote.prefs || {}).at || 0) ? (local.prefs || {}) : (remote.prefs || {});
   m.updatedAt = Math.max(local.updatedAt || 0, remote.updatedAt || 0);
   return m;
 }
@@ -362,11 +367,13 @@ function drawMarkers() {
   const r = radiusForZoom();
   for (const b of list) {
     const st = statusOf(b.id), col = S[st].color;
-    const style = { radius: id_is(b.id) ? r + 4 : r, fillColor: col, color: id_is(b.id) ? '#0f172a' : 'rgba(15,23,42,.55)', weight: id_is(b.id) ? 3 : 1, fillOpacity: 0.95, renderer };
+    const cool = inCooldown(b.id);
+    const style = { radius: id_is(b.id) ? r + 4 : r, fillColor: col, color: id_is(b.id) ? '#0f172a' : cool ? 'rgba(15,23,42,.2)' : 'rgba(15,23,42,.55)', weight: id_is(b.id) ? 3 : 1, fillOpacity: cool ? 0.25 : 0.95, renderer };
     let m = markers.get(b.id);
     if (!m) { m = L.circleMarker([b.lat, b.lon], style).addTo(map); m.on('click', () => openBiz(b.id)); markers.set(b.id, m); }
     else { m.setStyle(style); m.setRadius(style.radius); m.setLatLng([b.lat, b.lon]); }
   }
+  drawPermits();
   updateMapStats();
 }
 function id_is(id) { return current === id; }
@@ -374,7 +381,7 @@ function updateMapStats() {
   if (!map) return;
   const bounds = map.getBounds(); let n = 0, v = 0;
   for (const b of filtered()) if (bounds.contains([b.lat, b.lon])) { n++; if (statusOf(b.id) !== 'new') v++; }
-  $('#mapStats').textContent = BIZ.length || Object.keys(state.custom).length ? `${n} in view · ${v} visited` : 'No businesses loaded yet. Go to Setup.';
+  $('#mapStats').textContent = BIZ.length || Object.keys(state.custom).length ? (filters.planOnly ? `Today's plan: ${n} stops · ${v} visited` : `${n} in view · ${v} visited`) : 'No businesses loaded yet. Go to Setup.';
 }
 
 // ---------- GPS ----------
@@ -396,7 +403,9 @@ let tl; function throttleList() { if (tl) return; tl = setTimeout(() => { tl = n
 // ---------- filtering ----------
 function filtered() {
   const q = filters.q.trim().toLowerCase();
+  const plan = filters.planOnly && state.plan ? new Set(state.plan.ids) : null;
   return allBiz().filter(b => {
+    if (plan && !plan.has(b.id)) return false;
     if (filters.statuses.size && !filters.statuses.has(statusOf(b.id))) return false;
     if (filters.cats.size && !filters.cats.has(b.cat)) return false;
     if (filters.zips.size && !filters.zips.has(b.zip)) return false;
@@ -408,18 +417,19 @@ function filtered() {
     return true;
   });
 }
-function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size; }
+function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size || filters.planOnly || !filters.permits; }
 
 // ---------- business sheet ----------
 function openBiz(id, opts = {}) {
   const b = bizIndex.get(id); if (!b) return;
+  currentPermit = null;
   const prev = current; current = id;
   if (prev && markers.get(prev)) drawMarkers(); else drawMarkers();
   renderSheet(opts);
   $('#sheet').classList.remove('hidden');
   if (opts.fly) { switchView('map'); map.setView([b.lat, b.lon], Math.max(map.getZoom(), 17)); }
 }
-function closeSheet() { current = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
+function closeSheet() { current = null; currentPermit = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
 function renderSheet(opts = {}) {
   const id = current, b = bizIndex.get(id); if (!b) return closeSheet();
   const r = rec(id) || {}; const st = statusOf(id); const g = r.g || {};
@@ -431,7 +441,8 @@ function renderSheet(opts = {}) {
   let h = `<div class="sh-title"><h3>${esc(b.name)}</h3><button class="closex" data-act="close">✕</button></div>
   <div class="meta"><span class="pill" style="background:${S[st].color}">${S[st].label}</span>
    &nbsp;${esc(b.cat)}${b.type ? ' · ' + esc(b.type) : ''}${d ? ' · ' + d : ''}<br>${esc(addr || 'No address on file')} · ${esc(b.zip || '')}
-   ${lastV ? '<br>Last visit: ' + fmtWhen(lastV.t) + ' (' + S[lastV.s].label + ')' : ''}</div>
+   ${lastV ? '<br>Last visit: ' + fmtWhen(lastV.t) + ' (' + S[lastV.s].label + ')' : ''}
+   ${inCooldown(id) ? '<br><b>Cooling off</b> until ' + new Date(inCooldown(id)).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) + '. Skipped in day plans till then.' : ''}</div>
   <div class="actions">
     <a href="${navUrl}" target="_blank" rel="noopener">Directions</a>
     ${phone ? `<a href="tel:${esc(phone.replace(/[^\d+]/g, ''))}">Call</a>` : ''}
@@ -446,7 +457,10 @@ function renderSheet(opts = {}) {
     ${[['Tomorrow', 1], ['3 days', 3], ['1 week', 7], ['2 weeks', 14], ['1 month', 30], ['3 months', 90]].map(([l, n]) => `<button class="chip" data-fu="${n}">${l}</button>`).join('')}
     <input type="date" id="fuPick" class="chip" value="${esc(r.followUp || '')}" style="padding:5px 8px">
     ${r.followUp ? '<button class="chip" data-fu="clear">Clear</button>' : ''}
-   </div></div>`;
+   </div></div>
+  ${['dm', 'followup', 'appt', 'sold'].includes(st) || r.dealInstall || r.dealMonthly ? `<div class="fu-box" style="background:#f0fdf4"><div class="lbl">Deal ${st === 'sold' ? '(sold)' : '(in pipeline)'}</div>
+   <div class="two"><div class="field" style="margin:4px 0"><label>Install $</label><input data-f="dealInstall" type="number" inputmode="decimal" value="${esc(r.dealInstall || '')}" placeholder="0"></div>
+   <div class="field" style="margin:4px 0"><label>Monthly $</label><input data-f="dealMonthly" type="number" inputmode="decimal" value="${esc(r.dealMonthly || '')}" placeholder="0"></div></div></div>` : ''}`;
   // details
   h += `<details ${opts.openDetails || r.dm || r.provider || r.notes ? 'open' : ''}><summary>Details</summary>
    <div class="two"><div class="field"><label>Decision maker</label><input data-f="dm" value="${esc(r.dm || '')}" placeholder="Name"></div>
@@ -690,7 +704,7 @@ function applyMoves() { for (const b of BIZ) { const r = state.records[b.id]; if
 let listLimit = 100;
 function renderList() {
   const sort = $('#sortSel').value;
-  let list = filtered().map(b => ({ b, d: me ? dist(me.lat, me.lon, b.lat, b.lon) : null, r: rec(b.id) }));
+  let list = filtered().filter(b => filters.q || filters.statuses.has('booted') || !inCooldown(b.id)).map(b => ({ b, d: me ? dist(me.lat, me.lon, b.lat, b.lon) : null, r: rec(b.id) }));
   if (sort === 'dist' && me) list.sort((x, y) => x.d - y.d);
   else if (sort === 'recent') list = list.filter(x => x.r && x.r.visits && x.r.visits.length).sort((x, y) => y.r.visits[y.r.visits.length - 1].t - x.r.visits[x.r.visits.length - 1].t);
   else list.sort((x, y) => x.b.name.localeCompare(y.b.name));
@@ -742,11 +756,225 @@ function renderFollow() {
   let h = '';
   for (const [name, list, warn] of groups) if (list.length) h += `<h2 class="sec ${warn ? 'warn' : ''}">${name} (${list.length})</h2>` + list.map(x => item(x, fmtDate(x.r.followUp))).join('');
   if (soon.length) h += `<h2 class="sec">Contracts ending in the next 6 months (${soon.length})</h2>` + soon.map(x => item(x, esc(x.r.provider || '') + '<br>' + x.end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))).join('');
-  $('#follow').innerHTML = h || '<div class="empty">No follow-ups yet.<br>When you log a visit, tap a follow-up date and it shows up here.</div>';
+  h += permitsListHtml();
+  $('#follow').innerHTML = planHtml() + (h || '<div class="empty">No follow-ups yet.<br>When you log a visit, tap a follow-up date and it shows up here.</div>');
   const due = groups[0][1].length + groups[1][1].length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
 }
-$('#follow').addEventListener('click', e => { const it = e.target.closest('.item'); if (it) openBiz(it.dataset.id, { fly: false }); });
+$('#follow').addEventListener('click', e => {
+  const t = e.target;
+  if (t.id === 'planBtn' || t.id === 'planNew') return openPlanModal();
+  if (t.id === 'planMap') {
+    filters.planOnly = !filters.planOnly; $('#filterDot').classList.toggle('hidden', !filterActive());
+    if (filters.planOnly) { switchView('map'); const pts = state.plan.ids.map(id => bizIndex.get(id)).filter(Boolean).map(b => [b.lat, b.lon]); if (pts.length) map.fitBounds(pts, { padding: [40, 40] }); }
+    refreshAll(); renderFollow(); return;
+  }
+  const pm = t.closest('[data-permit]'); if (pm) return openPermit(pm.dataset.permit, true);
+  const it = t.closest('.item'); if (it && it.dataset.id) openBiz(it.dataset.id, { fly: false });
+});
+
+// ---------- plan my day ----------
+function planDone(id) { const r = rec(id); const v = r && r.visits && r.visits[r.visits.length - 1]; return !!(v && ymd(new Date(v.t)) === state.plan.date); }
+function buildPlan(start, n, useFilters) {
+  const today = todayStr();
+  const isDue = b => { const r = rec(b.id); return !!(r && r.followUp && r.followUp <= today); };
+  const pool = (useFilters ? filtered() : allBiz()).filter(b => {
+    const st = statusOf(b.id), r = rec(b.id);
+    if (st === 'sold' || st === 'dead' || inCooldown(b.id)) return false;
+    if (isDue(b)) return true;
+    if (r && r.visits && r.visits.length && ymd(new Date(r.visits[r.visits.length - 1].t)) === today) return false;
+    return st === 'new' || st === 'closed';
+  }).map(b => ({ b, d: dist(start.lat, start.lon, b.lat, b.lon), due: isDue(b) }));
+  const pick = pool.filter(x => x.due && x.d < 6).sort((a, b) => a.d - b.d).slice(0, n);
+  for (const x of pool.filter(x => !x.due).sort((a, b) => a.d - b.d)) { if (pick.length >= n) break; pick.push(x); }
+  const order = []; let cur = start; const left = pick.slice();
+  while (left.length) {
+    let bi = 0, bd = Infinity;
+    left.forEach((x, i) => { const d = dist(cur.lat, cur.lon, x.b.lat, x.b.lon); if (d < bd) { bd = d; bi = i; } });
+    const x = left.splice(bi, 1)[0]; order.push(x.b.id); cur = x.b;
+  }
+  return order;
+}
+function openPlanModal() {
+  const zips = TERRITORY.features.map(f => f.properties).sort((a, b) => a.zip.localeCompare(b.zip));
+  showModal(`<h3>Plan my day</h3>
+   <p class="small">Builds a route: follow-ups that are due first, then the closest places you haven't hit. Skips sold, not-a-fit, and anyone who booted you in the last ${cooldownDays()} days.</p>
+   <div class="field"><label>Start from</label><select id="plStart">${me ? '<option value="me">Where I am now</option>' : ''}${zips.map(z => `<option value="${z.zip}">${z.zip} ${esc(z.city)}</option>`).join('')}</select></div>
+   <div class="field"><label>How many stops</label><div class="chips">${[15, 25, 40, 60].map(n => `<button class="chip ${n === 25 ? 'on' : ''}" data-n="${n}">${n}</button>`).join('')}</div></div>
+   ${filterActive() ? '<label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="plFilt" checked style="width:22px;height:22px"> Only businesses that match my current filters</label>' : ''}
+   <button class="btn block primary" id="plGo">Build my plan</button><button class="btn block ghost" id="plCancel">Cancel</button>`);
+  let n = 25;
+  $('#modalBody').querySelectorAll('[data-n]').forEach(c => c.onclick = () => { n = +c.dataset.n; $('#modalBody').querySelectorAll('[data-n]').forEach(x => x.classList.toggle('on', x === c)); });
+  $('#plCancel').onclick = hideModal;
+  $('#plGo').onclick = () => {
+    const v = $('#plStart').value; let start;
+    if (v === 'me') start = { lat: me.lat, lon: me.lon };
+    else { const f = TERRITORY.features.find(f => f.properties.zip === v); const bb = L.geoJSON(f).getBounds().getCenter(); start = { lat: bb.lat, lon: bb.lng }; }
+    const ids = buildPlan(start, n, !!($('#plFilt') && $('#plFilt').checked));
+    if (!ids.length) { toast('Nothing left to plan around there. Try another start or clear filters.'); return; }
+    state.plan = { date: todayStr(), at: Date.now(), ids, start }; state.updatedAt = Date.now();
+    hideModal(); commit(); renderFollow(); toast('Plan ready: ' + ids.length + ' stops');
+  };
+}
+function planHtml() {
+  const p = state.plan;
+  if (!p || p.date !== todayStr()) return `<div class="card"><h3>Today's plan</h3><p class="small">Get a route of follow-ups and fresh doors, in order.</p><button class="btn block primary" id="planBtn">Plan my day</button></div>`;
+  const items = p.ids.map(id => bizIndex.get(id)).filter(Boolean);
+  const done = items.filter(b => planDone(b.id)).length;
+  const left = items.filter(b => !planDone(b.id));
+  const legs = []; for (let i = 0; i < left.length; i += 9) legs.push(left.slice(i, i + 9));
+  const legUrl = leg => 'https://www.google.com/maps/dir/?api=1&travelmode=driving&destination=' + leg[leg.length - 1].lat + ',' + leg[leg.length - 1].lon +
+    (leg.length > 1 ? '&waypoints=' + leg.slice(0, -1).map(b => b.lat + ',' + b.lon).join('%7C') : '');
+  return `<div class="card"><h3>Today's plan · ${done} of ${items.length} done</h3>
+   <div class="two"><button class="btn" id="planMap">${filters.planOnly ? 'Show everything' : 'Show on map'}</button><button class="btn" id="planNew">New plan</button></div>
+   ${legs.length ? `<p class="small" style="margin:10px 0 4px">Open in Google Maps (9 stops at a time):</p><div class="chips">${legs.map((l, i) => `<a class="chip" href="${legUrl(l)}" target="_blank" rel="noopener">Stops ${done + i * 9 + 1}–${done + i * 9 + l.length}</a>`).join('')}</div>` : '<p class="small ok">All done. Nice work.</p>'}
+   <div style="margin-top:8px">${items.map((b, i) => { const r = rec(b.id), due = r && r.followUp && r.followUp <= todayStr(); return `<div class="item" data-id="${b.id}" style="padding:10px 0;${planDone(b.id) ? 'opacity:.45' : ''}"><span class="pnum">${planDone(b.id) ? '✓' : i + 1}</span>
+     <div class="main"><div class="nm">${esc(b.name)}</div><div class="sub">${due ? '<b style="color:#2563eb">Follow-up</b> · ' : ''}${esc(b.cat)}${b.addr ? ' · ' + esc(b.addr) : ''}</div></div>
+     <div class="right"><span class="pin" style="background:${S[statusOf(b.id)].color};display:inline-block"></span></div></div>`; }).join('')}</div></div>`;
+}
+
+// ---------- permits ----------
+let currentPermit = null;
+const TERR_CITIES = /\b(peoria|surprise|el mirage|sun city west|sun city|youngtown)\b/i;
+const RES_RE = /\b(residential|single[- ]?family|sfr|sfd|pool|spa|patio|solar|pv|dwelling|duplex|fence|wall|re-?roof|reroof|water heater|mobile home|manufactured|casita|garage conversion|carport|res\b|addition-res)/i;
+const COM_RE = /\b(commercial|tenant|t\.?i\.?\b|retail|office|restaurant|industrial|warehouse|shell|business|church|school|medical|clinic|dental|hotel|storage|bank|store|suite|ste\b|com\b|comm\b|multi-?family|apartment|assembly|mercantile)/i;
+function loadSheetJS() {
+  if (window.XLSX) return Promise.resolve();
+  return new Promise((res, rej) => { const s = document.createElement('script'); s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; s.onload = res; s.onerror = () => rej(new Error('could not load the spreadsheet reader')); document.head.appendChild(s); });
+}
+function findCol(headers, re, taken) { for (let i = 0; i < headers.length; i++) if (!taken.has(i) && re.test(headers[i])) { taken.add(i); return i; } return -1; }
+async function importPermits(file, commercialOnly) {
+  await loadSheetJS();
+  const wb = XLSX.read(await file.arrayBuffer(), { type: 'array', cellDates: true });
+  let added = 0, seen = 0, skippedArea = 0, skippedRes = 0;
+  for (const name of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '', raw: false });
+    // header row = first row (in the top 20) with 3+ recognizable column names
+    let hi = -1;
+    for (let i = 0; i < Math.min(20, rows.length); i++) {
+      const hits = rows[i].filter(c => /permit|address|location|desc|type|valu|date|owner|contractor|zip|city|parcel|apn|work|scope/i.test(String(c))).length;
+      if (hits >= 3) { hi = i; break; }
+    }
+    if (hi < 0) continue;
+    const H = rows[hi].map(c => String(c).trim().toLowerCase()); const taken = new Set();
+    const col = {
+      permit: findCol(H, /permit.*(no|num|#|id)|^permit$|^record|case.*(no|num)|^number$/, taken),
+      date: findCol(H, /issue.*date|date.*issue|^issued|^date/, taken),
+      addr: findCol(H, /address|location|site/, taken),
+      city: findCol(H, /city|town|community/, taken),
+      zip: findCol(H, /zip/, taken),
+      type: findCol(H, /type|class|categor|use|occupancy/, taken),
+      desc: findCol(H, /desc|scope|work|project|name/, taken),
+      value: findCol(H, /valu|cost|amount/, taken),
+      owner: findCol(H, /owner|applicant|tenant|business|dba/, taken),
+      contractor: findCol(H, /contractor|builder/, taken),
+      parcel: findCol(H, /parcel|apn/, taken),
+    };
+    if (col.addr < 0) continue;
+    const g = (row, k) => col[k] >= 0 ? String(row[col[k]] || '').trim() : '';
+    for (const row of rows.slice(hi + 1)) {
+      const addr = g(row, 'addr'); if (!addr) continue;
+      seen++;
+      const text = [g(row, 'type'), g(row, 'desc')].join(' ');
+      let zip = g(row, 'zip').slice(0, 5); if (!/^\d{5}$/.test(zip)) { const m = (addr + ' ' + g(row, 'city')).match(/\b(85\d{3})\b/); zip = m ? m[1] : ''; }
+      const city = g(row, 'city');
+      const myZips = TERRITORY.features.map(f => f.properties.zip);
+      if (zip && !myZips.includes(zip)) { skippedArea++; continue; }
+      if (!zip && city && !TERR_CITIES.test(city)) { skippedArea++; continue; }
+      const isRes = RES_RE.test(text) && !COM_RE.test(text);
+      if (commercialOnly && isRes) { skippedRes++; continue; }
+      const permit = g(row, 'permit');
+      const id = 'p' + (permit ? permit.replace(/[^A-Za-z0-9]/g, '') : (addr + text).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40));
+      const old = state.permits[id];
+      state.permits[id] = { ...(old || {}), id, permit, date: g(row, 'date'), addr, city, zip, type: g(row, 'type'), desc: g(row, 'desc'), value: g(row, 'value'),
+        owner: g(row, 'owner'), contractor: g(row, 'contractor'), parcel: g(row, 'parcel'), kind: isRes ? 'residential' : COM_RE.test(text) ? 'commercial' : 'other',
+        status: (old && old.status) || 'new', importedAt: (old && old.importedAt) || Date.now(), updatedAt: Date.now() };
+      if (!old) added++;
+    }
+  }
+  state.updatedAt = Date.now(); await commit();
+  return { added, seen, skippedArea, skippedRes };
+}
+let geocoding = false;
+async function geocodePermits(onProgress) {
+  if (geocoding) return; geocoding = true;
+  try {
+    const todo = Object.values(state.permits).filter(p => p.lat == null && !p.geoFail && p.status === 'new');
+    for (let i = 0; i < todo.length; i++) {
+      const p = todo[i];
+      onProgress && onProgress(`Finding permits on the map (${i + 1} of ${todo.length})…`);
+      const q = [p.addr.replace(/\s+(ste|suite|unit|bldg|#)\s*\S+/i, ''), p.city || '', 'AZ', p.zip || ''].filter(Boolean).join(', ');
+      try {
+        const r = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=us&q=' + encodeURIComponent(q), { headers: { Accept: 'application/json' } });
+        const j = await r.json();
+        const pp = state.permits[p.id]; if (!pp) continue;
+        if (j[0]) {
+          const lat = +(+j[0].lat).toFixed(6), lon = +(+j[0].lon).toFixed(6), z = zipOf(lat, lon);
+          pp.lat = lat; pp.lon = lon; if (!z) pp.outside = true; else if (!pp.zip) pp.zip = z.zip;
+        } else pp.geoFail = true;
+        pp.updatedAt = Date.now();
+      } catch (e) { /* offline, try later */ break; }
+      if (i % 5 === 4) { await saveLocal(); drawMarkers(); }
+      await new Promise(z => setTimeout(z, 1100)); // be polite to the free geocoder
+    }
+    state.updatedAt = Date.now(); await commit();
+  } finally { geocoding = false; onProgress && onProgress(''); renderSettingsIfOpen(); }
+}
+function livePermits() { return Object.values(state.permits || {}).filter(p => p.status === 'new' && !p.outside); }
+let permitMarkers = new Map();
+function drawPermits() {
+  const show = filters.permits && !filters.planOnly ? livePermits().filter(p => p.lat != null) : [];
+  const ids = new Set(show.map(p => p.id));
+  for (const [id, m] of permitMarkers) if (!ids.has(id)) { map.removeLayer(m); permitMarkers.delete(id); }
+  const r = radiusForZoom() + 2;
+  for (const p of show) {
+    const sel = currentPermit === p.id;
+    const style = { radius: sel ? r + 4 : r, fillColor: '#f97316', color: sel ? '#0f172a' : '#fff', weight: sel ? 3 : 2, fillOpacity: 1, renderer };
+    let m = permitMarkers.get(p.id);
+    if (!m) { m = L.circleMarker([p.lat, p.lon], style).addTo(map); m.on('click', () => openPermit(p.id)); permitMarkers.set(p.id, m); }
+    else { m.setStyle(style); m.setRadius(style.radius); }
+    m.bringToFront();
+  }
+}
+function permitTitle(p) { return p.owner || p.desc || p.type || 'Permit ' + (p.permit || ''); }
+function openPermit(id, fly) {
+  const p = state.permits[id]; if (!p) return;
+  current = null; currentPermit = id;
+  const nav = p.lat != null ? 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lon : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(p.addr + ' ' + (p.city || '') + ' AZ');
+  const row = (k, v) => v ? `<div class="brow"><span class="l" style="width:92px;color:#64748b">${k}</span><span style="flex:1">${esc(v)}</span></div>` : '';
+  $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close">✕</button></div>
+   <div class="meta"><span class="pill" style="background:#fdba74">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
+   ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', p.value)}${row('Owner', p.owner)}${row('Contractor', p.contractor)}${row('Parcel', p.parcel)}
+   ${p.lat == null ? '<p class="small">Not placed on the map yet' + (p.geoFail ? ' (address not found)' : '') + '.</p>' : ''}
+   <div class="actions"><a href="${nav}" target="_blank" rel="noopener">Directions</a><a href="https://www.google.com/search?q=${encodeURIComponent((p.contractor || p.owner || p.addr) + ' ' + (p.city || 'AZ'))}" target="_blank" rel="noopener">Google it</a></div>
+   <p class="small">Something's being built or remodeled here. Stop by while it's under construction and ask who's handling security, cameras, access control and fire.</p>
+   <button class="btn block primary" data-pact="convert">Turn into a prospect</button>
+   <button class="btn block ghost" data-pact="dismiss">Not worth it, hide this permit</button>`;
+  $('#sheet').classList.remove('hidden'); drawMarkers();
+  if (fly && p.lat != null) { filters.planOnly = false; $('#filterDot').classList.toggle('hidden', !filterActive()); switchView('map'); $('#sheet').classList.remove('hidden'); map.setView([p.lat, p.lon], 17); }
+}
+$('#sheet').addEventListener('click', e => {
+  const t = e.target.closest('[data-pact]'); if (!t || !currentPermit) return;
+  const p = state.permits[currentPermit];
+  if (t.dataset.pact === 'close') { currentPermit = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
+  if (t.dataset.pact === 'dismiss') { p.status = 'dismissed'; p.updatedAt = state.updatedAt = Date.now(); currentPermit = null; $('#sheet').classList.add('hidden'); commit(); toast('Permit hidden'); }
+  if (t.dataset.pact === 'convert') {
+    const lat = p.lat != null ? p.lat : (me ? me.lat : map.getCenter().lat), lon = p.lon != null ? p.lon : (me ? me.lon : map.getCenter().lng);
+    const z = zipOf(lat, lon); const nid = 'c' + Date.now().toString(36);
+    state.custom[nid] = { id: nid, name: permitTitle(p), cat: 'Other', type: 'under construction', lat, lon, addr: p.addr, city: p.city || (z ? z.city : ''), zip: p.zip || (z ? z.zip : ''), phone: '', web: '', hours: '', updatedAt: Date.now() };
+    const r = touch(nid);
+    r.notes = `From permit ${p.permit || ''}${p.date ? ' (' + p.date + ')' : ''}: ${[p.type, p.desc].filter(Boolean).join(' – ')}${p.value ? '. Value ' + p.value : ''}${p.contractor ? '. Contractor: ' + p.contractor : ''}${p.owner ? '. Owner: ' + p.owner : ''}`;
+    p.status = 'converted'; p.bizId = nid; p.updatedAt = state.updatedAt = Date.now();
+    currentPermit = null; reindex(); commit(); openBiz(nid, { openDetails: true }); toast('Added as a prospect. Rename it once you know the business name.');
+  }
+});
+function permitsListHtml() {
+  const list = livePermits().sort((a, b) => (b.importedAt || 0) - (a.importedAt || 0));
+  if (!list.length) return '';
+  return `<h2 class="sec">New permits (${list.length})</h2>` + list.slice(0, 50).map(p => `<div class="item" data-permit="${p.id}"><span class="pin" style="background:#f97316"></span>
+    <div class="main"><div class="nm">${esc(permitTitle(p))}</div><div class="sub">${esc(p.addr)}${p.city ? ', ' + esc(p.city) : ''}${p.contractor ? ' · ' + esc(p.contractor) : ''}</div></div>
+    <div class="right">${esc(p.date || '')}${p.value ? '<br>' + esc(p.value) : ''}</div></div>`).join('');
+}
 
 // ---------- stats ----------
 function renderStats() {
@@ -771,10 +999,24 @@ function renderStats() {
   const z = {}; for (const b of allBiz()) { const k = b.zip || '—'; z[k] = z[k] || { n: 0, v: 0, city: b.city }; z[k].n++; if (statusOf(b.id) !== 'new') z[k].v++; }
   // by category conversion
   const cat = {}; for (const v of visits) { const b = bizIndex.get(v.id); if (!b) continue; const c = cat[b.cat] = cat[b.cat] || { n: 0, c: 0 }; c.n++; if (CONVO.has(v.s)) c.c++; }
+  // pipeline
+  const nowD = new Date(), mStart = new Date(nowD.getFullYear(), nowD.getMonth(), 1).getTime();
+  const pipe = { n: 0, inst: 0, mon: 0 }, soldM = { n: 0, inst: 0, mon: 0 }, soldAll = { n: 0, inst: 0, mon: 0 };
+  for (const id in state.records) {
+    const r = state.records[id]; if (!bizIndex.has(id)) continue;
+    const inst = +r.dealInstall || 0, mon = +r.dealMonthly || 0;
+    if (['dm', 'followup', 'appt'].includes(r.status) && (inst || mon)) { pipe.n++; pipe.inst += inst; pipe.mon += mon; }
+    if (r.status === 'sold') { soldAll.n++; soldAll.inst += inst; soldAll.mon += mon; if ((r.statusAt || 0) >= mStart) { soldM.n++; soldM.inst += inst; soldM.mon += mon; } }
+  }
+  const dealCard = `<div class="card"><h3>Deals</h3><div class="kpis">
+    <div class="kpi"><b>${soldM.n}</b><span>Sold this month</span></div><div class="kpi"><b>${money(soldM.inst)}</b><span>Install this month</span></div><div class="kpi"><b>${money(soldM.mon)}</b><span>Monthly added</span></div></div>
+    <div class="kpis" style="margin-top:8px"><div class="kpi"><b>${pipe.n}</b><span>Open deals</span></div><div class="kpi"><b>${money(pipe.inst)}</b><span>Install in pipeline</span></div><div class="kpi"><b>${money(pipe.mon)}</b><span>Monthly in pipeline</span></div></div>
+    <p class="small" style="margin-bottom:0">All time sold: ${soldAll.n} · ${money(soldAll.inst)} install · ${money(soldAll.mon)}/mo. Add $ on any deal from its Deal box.</p></div>`;
   let h = `<div class="card"><h3>Today</h3><div class="kpis">
     <div class="kpi"><b>${tv.length}</b><span>Doors</span></div><div class="kpi"><b>${convos(tv)}</b><span>DM convos</span></div><div class="kpi"><b>${appts(tv)}</b><span>Appts</span></div></div></div>
    <div class="card"><h3>This week</h3><div class="kpis">
     <div class="kpi"><b>${wv.length}</b><span>Doors</span></div><div class="kpi"><b>${pct(convos(wv), wv.length)}</b><span>Reach DM</span></div><div class="kpi"><b>${appts(wv)} / ${sold(wv)}</b><span>Appts / Sold</span></div></div></div>
+   ${dealCard}
    <div class="card"><h3>Doors per day, last 2 weeks</h3><div class="bars">${perDay.map((n, i) => `<div class="b"><em>${n || ''}</em><i style="height:${n / max * 80}%"></i>${new Date(days[i] + 'T12:00').toLocaleDateString(undefined, { weekday: 'narrow' })}</div>`).join('')}</div></div>
    <div class="card"><h3>All visits by outcome (${visits.length})</h3>${STATUSES.filter(s => s.k !== 'new').map(s => { const n = mix[s.k] || 0; return `<div class="brow"><span class="l">${s.label}</span><span class="t"><i style="width:${visits.length ? n / visits.length * 100 : 0}%;background:${s.color}"></i></span><span class="n">${n}</span></div>`; }).join('')}</div>
    <div class="card"><h3>Reach-a-DM rate by business type</h3>${Object.keys(cat).length ? Object.entries(cat).sort((a, b) => b[1].n - a[1].n).map(([k, c]) => `<div class="brow"><span class="l">${esc(k)}</span><span class="t"><i style="width:${c.c / c.n * 100}%;background:#4b8ff7"></i></span><span class="n">${c.c}/${c.n}</span></div>`).join('') : '<div class="small">Shows up once you start logging.</div>'}</div>
@@ -802,7 +1044,18 @@ function renderSettings() {
     <button class="btn block primary" id="saveSync">Save &amp; sync now</button>
     <p class="small">${settings.lastSync ? 'Last synced ' + fmtWhen(settings.lastSync) : 'Not synced yet.'} ${settings.lastSyncErr && !syncReady() ? '' : ''}</p>
   </div>
-  <div class="card"><h3>3. Google details (optional)</h3>
+  <div class="card"><h3>3. Permits (new construction)</h3>
+    <p class="small">Each week, download the county's permit spreadsheet from <a href="https://www.maricopa.gov/Archive.aspx?AMID=128" target="_blank" rel="noopener">maricopa.gov weekly permit reports</a> (covers Sun City and Sun City West), or any permit list you get from a city, and drop it here. It keeps the ones in your zips and puts them on the map as orange pins.</p>
+    <label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type="checkbox" id="pmCom" checked style="width:22px;height:22px"> Commercial only (skip pools, patios, re-roofs)</label>
+    <label class="btn block primary" style="text-align:center">Import permit spreadsheet<input type="file" id="pmFile" accept=".xlsx,.xls,.csv" hidden></label>
+    <div id="pmMsg" class="small"></div><div id="pmGeo" class="small"></div>
+    <p class="small">${Object.keys(state.permits || {}).length} permits saved · ${livePermits().length} new · ${Object.values(state.permits || {}).filter(p => p.status === 'new' && p.lat == null && !p.geoFail).length} still being placed on the map</p>
+  </div>
+  <div class="card"><h3>Cooling off</h3>
+    <p class="small">After someone boots you, their pin fades and they're left out of day plans for this many days.</p>
+    <div class="field"><label>Days</label><input id="cdDays" type="number" inputmode="numeric" value="${cooldownDays()}"></div>
+  </div>
+  <div class="card"><h3>Google details (optional)</h3>
     <p class="small">With a Google Maps API key, each business gets a button that pulls its phone, hours and address. It only calls Google when you tap it.</p>
     <div class="field"><label>Google API key</label><input id="sGkey" type="password" value="${esc(settings.gkey || '')}" autocapitalize="off" autocorrect="off"></div>
     <button class="btn block" id="saveG">Save key</button>
@@ -822,7 +1075,7 @@ function renderSettings() {
     <label class="btn block" style="text-align:center">Restore from backup<input type="file" id="impJson" accept=".json,application/json" hidden></label>
   </div>
   <div class="card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
-  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v5</p>`;
+  <p class="small" style="text-align:center;margin:20px">Map data © OpenStreetMap contributors · app v6</p>`;
 }
 $('#settings').addEventListener('click', async e => {
   const t = e.target;
@@ -846,6 +1099,17 @@ $('#settings').addEventListener('click', async e => {
 });
 $('#settings').addEventListener('change', async e => {
   if (e.target.id === 'fType') $('#fOptsWrap').classList.toggle('hidden', e.target.value !== 'choice');
+  if (e.target.id === 'cdDays') { state.prefs = { ...(state.prefs || {}), cooldownDays: Math.max(0, +e.target.value || 0), at: Date.now() }; state.updatedAt = Date.now(); commit(); toast('Saved'); }
+  if (e.target.id === 'pmFile') {
+    const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    const msg = $('#pmMsg'); msg.textContent = 'Reading spreadsheet…'; msg.style.color = '';
+    try {
+      const r = await importPermits(f, $('#pmCom').checked);
+      msg.textContent = `Read ${r.seen} permits. ${r.added} new ones in your zips. Skipped ${r.skippedArea} outside your territory${$('#pmCom').checked ? ' and ' + r.skippedRes + ' residential' : ''}.`;
+      if (!r.seen) { msg.textContent = "Couldn't find an address column in that file. Send me a screenshot of the top of the spreadsheet and I'll adjust it."; msg.style.color = '#e5484d'; }
+      geocodePermits(m => { const el = $('#pmGeo'); if (el) el.textContent = m; });
+    } catch (err) { msg.textContent = 'Could not read that file: ' + err.message; msg.style.color = '#e5484d'; }
+  }
   if (e.target.id === 'impJson') {
     const f = e.target.files[0]; if (!f) return;
     try { const data = JSON.parse(await f.text()); state = mergeInto(state, data); reindex(); await commit(); toast('Backup restored and merged'); }
@@ -858,7 +1122,7 @@ function download(name, text, type) {
 }
 function exportCsv() {
   const fields = state.fields || [];
-  const head = ['Name', 'Category', 'Type', 'Address', 'City', 'Zip', 'Status', 'Visits', 'First visit', 'Last visit', 'Follow-up', 'Decision maker', 'Title', 'Phone', 'Email', 'Provider', 'Contract ends', 'Current system', ...fields.map(f => f.name), 'Notes', 'Lat', 'Lon'];
+  const head = ['Name', 'Category', 'Type', 'Address', 'City', 'Zip', 'Status', 'Visits', 'First visit', 'Last visit', 'Follow-up', 'Decision maker', 'Title', 'Phone', 'Email', 'Provider', 'Contract ends', 'Current system', 'Install $', 'Monthly $', ...fields.map(f => f.name), 'Notes', 'Lat', 'Lon'];
   const q = v => { v = v == null ? '' : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
   const rows = [head];
   for (const b of allBiz()) {
@@ -866,7 +1130,7 @@ function exportCsv() {
     const vs = r.visits || [];
     rows.push([b.name, b.cat, b.type, (r.g && r.g.addr) || b.addr, b.city, b.zip, S[statusOf(b.id)].label, vs.length,
       vs[0] ? new Date(vs[0].t).toLocaleString() : '', vs.length ? new Date(vs[vs.length - 1].t).toLocaleString() : '', r.followUp || '',
-      r.dm, r.dmTitle, r.phone || (r.g && r.g.phone) || b.phone, r.email, r.provider, r.contractEnd, r.currentSystem,
+      r.dm, r.dmTitle, r.phone || (r.g && r.g.phone) || b.phone, r.email, r.provider, r.contractEnd, r.currentSystem, r.dealInstall, r.dealMonthly,
       ...fields.map(f => (r.custom || {})[f.id]), r.notes, b.lat, b.lon]);
   }
   download('knocks-' + todayStr() + '.csv', rows.map(r => r.map(q).join(',')).join('\n'), 'text/csv');
@@ -880,11 +1144,13 @@ $('#filterBtn').onclick = () => {
    <h2 class="sec" style="margin-left:0">Status</h2><div class="checkgrid">${STATUSES.map(s => chip(filters.statuses, s.k, s.label, s.color)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Business type</h2><div class="checkgrid">${CATS.map(c => chip(filters.cats, c, c)).join('')}</div>
    <h2 class="sec" style="margin-left:0">Zip</h2><div class="checkgrid">${zips.map(z => chip(filters.zips, z.zip, z.zip + ' ' + z.city)).join('')}</div>
+   <h2 class="sec" style="margin-left:0">Other</h2><div class="checkgrid"><button class="chip ${filters.permits ? 'on' : ''}" data-tog="permits"><span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:#f97316;margin-right:5px"></span>Permits</button>${state.plan && state.plan.date === todayStr() ? `<button class="chip ${filters.planOnly ? 'on' : ''}" data-tog="planOnly">Today's plan only</button>` : ''}</div>
    <div class="two" style="margin-top:14px"><button class="btn ghost" id="fClear">Clear all</button><button class="btn primary" id="fDone">Done</button></div>`);
   $('#modalBody').onclick = e => {
     const t = e.target.closest('button'); if (!t) return;
     if (t.dataset.set) { const set = t.dataset.set === 's' ? filters.statuses : t.dataset.set === 'c' ? filters.cats : filters.zips; set.has(t.dataset.val) ? set.delete(t.dataset.val) : set.add(t.dataset.val); t.classList.toggle('on'); }
-    if (t.id === 'fClear') { filters.statuses.clear(); filters.cats.clear(); filters.zips.clear(); $('#modalBody').querySelectorAll('.chip.on').forEach(c => c.classList.remove('on')); }
+    if (t.dataset.tog) { filters[t.dataset.tog] = !filters[t.dataset.tog]; t.classList.toggle('on'); }
+    if (t.id === 'fClear') { filters.statuses.clear(); filters.cats.clear(); filters.zips.clear(); filters.planOnly = false; filters.permits = true; $('#modalBody').querySelectorAll('.chip.on').forEach(c => c.classList.remove('on')); const pc = $('#modalBody').querySelector('[data-tog=permits]'); if (pc) pc.classList.add('on'); }
     if (t.id === 'fDone') { hideModal(); $('#modalBody').onclick = null; }
     $('#filterDot').classList.toggle('hidden', !filterActive()); refreshAll();
   };
@@ -951,6 +1217,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   setBadge(syncReady() ? 'ok' : 'off');
   startGPS();
   if (syncReady()) sync();
+  setTimeout(() => { if (Object.values(state.permits || {}).some(p => p.status === 'new' && p.lat == null && !p.geoFail)) geocodePermits(); }, 5000);
   if (!BIZ.length) { switchView('settings'); toast('Start here: tap "Load businesses"'); }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   window.__km = { get state() { return state; }, get BIZ() { return BIZ; }, logOutcome, openBiz, sync, mergeInto, zipOf, loadBusinesses };

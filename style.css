@@ -127,3 +127,6 @@ details[open] summary::after{content:"▴"}
 .ziplabel::before{display:none}
 .scanbtn{text-align:center;background:#0f172a;color:#fff;border-color:#0f172a;margin:6px 0 4px}
 .cardrow{display:flex;gap:8px;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px}
+a.chip{text-decoration:none;color:var(--ink)}
+.pnum{width:26px;height:26px;border-radius:50%;background:#0f172a;color:#fff;font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center;flex:none}
+#follow .card .item{background:transparent}
