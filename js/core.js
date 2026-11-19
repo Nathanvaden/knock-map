@@ -30,13 +30,17 @@ const OVERPASS = [
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
 const DATA_FILE = 'data.json';
+// Each rep's copy sets window.KM_USER in its own index.html (e.g. brooke/). Nathan's copy has none.
+const KM_USER = window.KM_USER || {};
+const KM_ID = KM_USER.id || '';
+const KM_BASE = KM_USER.base || '';
 
 // ---------- tiny IndexedDB key-value ----------
 const kv = (() => {
   let dbp;
   function db() {
     if (!dbp) dbp = new Promise((res, rej) => {
-      const r = indexedDB.open('knockmap', 1);
+      const r = indexedDB.open(KM_ID ? 'knockmap-' + KM_ID : 'knockmap', 1);
       r.onupgradeneeded = () => r.result.createObjectStore('kv');
       r.onsuccess = () => res(r.result);
       r.onerror = () => rej(r.error);
@@ -60,7 +64,7 @@ let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', pl
 let lastUndo = null;
 let dirty = false;
 
-const APP_VER = 28;
+const APP_VER = 29;
 function blankState() { return { v: 1, records: {}, custom: {}, hidden: {}, fields: [], permits: {}, customers: {}, leases: {}, plan: null, prefs: {}, updatedAt: 0 }; }
 
 const $ = s => document.querySelector(s);

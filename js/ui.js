@@ -15,9 +15,9 @@ function renderSettings() {
     <p class="small">Loading saves after each zip, so if it stops you can pick up where it left off. Refreshing keeps all your knocks and notes.</p>
   </div>
   <div class="card"><h3><span class="step ${settings.lastSync ? 'done' : ''}">${settings.lastSync ? '✓' : '2'}</span>Cloud backup</h3>
-    <p class="small">Saves your knocks to your private <b>knock-data</b> repo so nothing is lost if your phone dies, and so they show up on any device.</p>
+    <p class="small">Saves your knocks to your private <b>${KM_ID ? 'knock-data-' + KM_ID : 'knock-data'}</b> repo so nothing is lost if your phone dies, and so they show up on any device.</p>
     <div class="field"><label>GitHub username</label><input id="sOwner" value="${esc(settings.owner || '')}" autocapitalize="off" autocorrect="off"></div>
-    <div class="field"><label>Data repo</label><input id="sRepo" value="${esc(settings.repo || 'knock-data')}" autocapitalize="off" autocorrect="off"></div>
+    <div class="field"><label>Data repo</label><input id="sRepo" value="${esc(settings.repo || (KM_ID ? 'knock-data-' + KM_ID : 'knock-data'))}" autocapitalize="off" autocorrect="off"></div>
     <div class="field"><label>Access token</label><input id="sToken" type="password" value="${esc(settings.token || '')}" placeholder="github_pat_…" autocapitalize="off" autocorrect="off"></div>
     <button class="btn block primary" id="saveSync">Save &amp; sync now</button>
     <p class="small">${settings.lastSync ? 'Last synced ' + fmtWhen(settings.lastSync) : 'Not synced yet.'} ${settings.lastSyncErr && !syncReady() ? '' : ''}</p>
@@ -62,7 +62,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v28 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v29 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -243,7 +243,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   if (!BIZ.length) switchView('settings');
   if (!settings.seenHelp) { settings.seenHelp = true; saveLocalSoon(); setTimeout(showHelp, 600); }
   else if (!BIZ.length) toast('Start here: tap "Load businesses"');
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register(KM_BASE + 'sw.js').catch(() => {});
   window.__km = { get state() { return state; }, get BIZ() { return BIZ; }, logOutcome, openBiz, sync, mergeInto, zipOf, loadBusinesses };
 })();
 window.__kmLoaded = true;
