@@ -11,11 +11,14 @@ const STATUSES = [
   { k: 'dm',         label: 'Talked to DM',    color: '#0ea5a4', hint: 'Reached the decision maker' },
   { k: 'followup',   label: 'Follow-up',       color: '#3b82f6', hint: 'Coming back' },
   { k: 'appt',       label: 'Appt set',        color: '#8b5cf6', hint: 'Meeting on the books' },
+  { k: 'quote',      label: 'Building quote',  color: '#ec4899', hint: 'Had the appointment, putting the quote together' },
+  { k: 'sent',       label: 'Quote sent',      color: '#84cc16', hint: 'Quote is in their hands, waiting on a yes' },
   { k: 'sold',       label: 'Sold',            color: '#16a34a', hint: 'Closed the deal' },
   { k: 'dead',       label: 'Not a fit',       color: '#334155', hint: 'Don\'t come back' },
 ];
 const S = Object.fromEntries(STATUSES.map(s => [s.k, s]));
-const CONVO = new Set(['dm', 'followup', 'appt', 'sold']); // reached a decision maker
+const CONVO = new Set(['dm', 'followup', 'appt', 'quote', 'sent', 'sold']);
+const DEAL_STAGES = ['appt', 'quote', 'sent']; // reached a decision maker
 const ICON = n => `<svg class="ico"><use href="#i-${n}"/></svg>`;
 const CATS = ['Retail', 'Food & Drink', 'Auto', 'Medical', 'Office', 'Finance', 'Industrial / Trades',
   'Lodging', 'Fitness / Rec', 'Senior / Care', 'School / Childcare', 'Church', 'Storage', 'Other'];
@@ -517,7 +520,7 @@ function renderSheet(opts = {}) {
     <input type="date" id="fuPick" class="chip" value="${esc(r.followUp || '')}" style="padding:5px 8px">
     ${r.followUp ? '<button class="chip" data-fu="clear">Clear</button>' : ''}
    </div></div>
-  ${['dm', 'followup', 'appt', 'sold'].includes(st) || r.dealInstall || r.dealMonthly ? `<div class="fu-box deal"><div class="lbl">Deal ${st === 'sold' ? '(sold)' : '(in pipeline)'}</div>
+  ${['dm', 'followup', 'appt', 'quote', 'sent', 'sold'].includes(st) || r.dealInstall || r.dealMonthly ? `<div class="fu-box deal"><div class="lbl">Deal ${st === 'sold' ? '(sold)' : '(in pipeline)'}</div>
    <div class="two"><div class="field" style="margin:4px 0"><label>Install $</label><input data-f="dealInstall" type="number" inputmode="decimal" value="${esc(r.dealInstall || '')}" placeholder="0"></div>
    <div class="field" style="margin:4px 0"><label>Monthly $</label><input data-f="dealMonthly" type="number" inputmode="decimal" value="${esc(r.dealMonthly || '')}" placeholder="0"></div></div></div>` : ''}
   ${futuresHtml(r)}
@@ -687,6 +690,17 @@ function futureModal(id, fid) {
     $('#futDel').onclick = () => { r.futures = r.futures.filter(x => x !== f); r.updatedAt = state.updatedAt = Date.now(); hideModal(); commit(); renderSheet({ tab: 'visit' }); };
   }
 }
+function dealsHtml() {
+  const rows = { appt: [], quote: [], sent: [] };
+  for (const id in state.records) { const r = state.records[id], b = bizIndex.get(id); if (b && rows[r.status]) rows[r.status].push({ b, r }); }
+  const n = rows.appt.length + rows.quote.length + rows.sent.length; if (!n) return '';
+  const ago = t => { const d = Math.floor((Date.now() - t) / 864e5); return d <= 0 ? 'today' : d === 1 ? '1 day' : d + ' days'; };
+  const line = ({ b, r }) => `<div class="item" data-id="${b.id}"><span class="pin" style="background:${S[r.status].color}"></span>
+    <div class="main"><div class="nm">${esc(b.name)}</div><div class="sub">${[r.dm, (r.dealInstall || r.dealMonthly) && [r.dealInstall && money(r.dealInstall), r.dealMonthly && money(r.dealMonthly) + '/mo'].filter(Boolean).join(' + ')].filter(Boolean).map(esc).join(' · ') || esc(b.cat)}</div></div>
+    <div class="right">${r.status === 'sent' ? 'sent ' + ago(r.quoteSentAt || r.statusAt) : ago(r.statusAt)}</div></div>`;
+  return `<h2 class="sec">Deals in progress (${n})</h2>` + [['quote', 'Quotes to build'], ['sent', 'Quotes out, waiting on a yes'], ['appt', 'Appointments set']].filter(([k]) => rows[k].length)
+    .map(([k, l]) => `<div class="small" style="padding:6px 16px 2px;font-weight:600">${l} (${rows[k].length})</div>` + rows[k].sort((a, b) => (a.r.statusAt || 0) - (b.r.statusAt || 0)).map(line).join('')).join('');
+}
 function allFutures() {
   const out = [];
   for (const id in state.records) { const b = bizIndex.get(id); if (!b) continue; for (const f of (state.records[id].futures || [])) if (f.status === 'open') out.push({ b, f }); }
@@ -755,9 +769,11 @@ function logOutcome(id, s) {
   const v = { t: Date.now(), s };
   if (me) { const b = bizIndex.get(id); v.d = Math.round(dist(me.lat, me.lon, b.lat, b.lon) * 5280); }
   r.visits = r.visits || []; r.visits.push(v); r.status = s; r.statusAt = v.t;
+  let autoFu = false;
+  if (s === 'sent') { r.quoteSentAt = v.t; if (!r.followUp || r.followUp < todayStr()) { r.followUp = addDays(3); autoFu = true; } }
   lastUndo = () => { const rr = touch(id); rr.visits = rr.visits.filter(x => x.t !== v.t); rr.status = prev.status; rr.statusAt = prev.statusAt; rr.followUp = prev.followUp; };
   commit(); renderSheet();
-  toast('Logged: ' + S[s].label, true);
+  toast('Logged: ' + S[s].label + (autoFu ? '. Follow-up set for ' + fmtDate(r.followUp) : ''), true);
   if (s === 'followup' && !r.followUp) setTimeout(() => { const el = document.querySelector('.fu-box'); el && el.scrollIntoView({ behavior: 'smooth', block: 'center' }); }, 50);
 }
 
@@ -795,7 +811,7 @@ $('#sheet').addEventListener('click', e => {
   if (act === 'futAdd') { futureModal(id); return; }
   if (act === 'rename') { renameModal(id); return; }
   if (act === 'apStart') { startAppt(id); return; }
-  if (act === 'apEnd') { flushAp(id); const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (a) { a.end = Date.now(); a.updatedAt = Date.now(); } delete r.activeAppt; commit(); renderSheet({ tab: 'appt' }); toast('Appointment saved'); return; }
+  if (act === 'apEnd') { flushAp(id); const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (a) { a.end = Date.now(); a.updatedAt = Date.now(); } delete r.activeAppt; const moved = !['quote', 'sent', 'sold', 'dead'].includes(r.status); if (moved) { r.visits = r.visits || []; r.visits.push({ t: Date.now(), s: 'quote', note: 'Appointment done' }); r.status = 'quote'; r.statusAt = Date.now(); } commit(); renderSheet({ tab: 'appt' }); toast(moved ? 'Appointment saved. Moved to Building quote' : 'Appointment saved'); return; }
   if (act === 'apLog') { flushAp(id); const ta = $('#apText'), v = ta.value.trim(); if (!v) { ta.focus(); return; } const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (!a) return; a.log = (a.log || []).concat({ t: Date.now(), text: v }); commit(); renderSheet({ tab: 'appt' }); setTimeout(() => { const x = $('#apText'); if (x) x.focus(); }, 50); return; }
   if (t.dataset.aplogdel) { const r = touch(id), [aid, tt] = t.dataset.aplogdel.split('|'), a = (r.appts || []).find(x => x.id === aid); if (a) a.log = (a.log || []).filter(n => String(n.t) !== tt); commit(); renderSheet({ tab: 'appt' }); return; }
   if (t.dataset.apven) { flushAp(id); const r = touch(id), a = (r.appts || []).find(x => x.id === r.activeAppt); if (!a) return; const v = t.dataset.apven; a.venues = (a.venues || []).includes(v) ? a.venues.filter(x => x !== v) : (a.venues || []).concat(v); commit(); renderSheet({ tab: 'appt' }); return; }
@@ -1045,7 +1061,7 @@ function renderFollow() {
   for (const [name, list, warn] of groups) if (list.length) h += `<h2 class="sec ${warn ? 'warn' : ''}">${name} (${list.length})</h2>` + list.map(x => item(x, fmtDate(x.r.followUp))).join('');
   if (soon.length) h += `<h2 class="sec">Contracts ending in the next 6 months (${soon.length})</h2>` + soon.map(x => item(x, esc(x.r.provider || '') + '<br>' + x.end.toLocaleDateString(undefined, { month: 'short', year: 'numeric' }))).join('');
   h += permitsListHtml();
-  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + futuresListHtml() + leasesHtml() + landlordsHtml();
+  $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Today\'s route, follow-ups that are due, expiring contracts, new permits and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + dealsHtml() + futuresListHtml() + leasesHtml() + landlordsHtml();
   const due = groups[0][1].length + groups[1][1].length + allFutures().filter(x => x.f.revisit && x.f.revisit <= todayStr()).length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
 }
@@ -1798,12 +1814,13 @@ function renderStats() {
   for (const id in state.records) {
     const r = state.records[id]; if (!bizIndex.has(id)) continue;
     const inst = +r.dealInstall || 0, mon = +r.dealMonthly || 0;
-    if (['dm', 'followup', 'appt'].includes(r.status) && (inst || mon)) { pipe.n++; pipe.inst += inst; pipe.mon += mon; }
+    if (['dm', 'followup', 'appt', 'quote', 'sent'].includes(r.status) && (inst || mon)) { pipe.n++; pipe.inst += inst; pipe.mon += mon; }
     if (r.status === 'sold') { soldAll.n++; soldAll.inst += inst; soldAll.mon += mon; if ((r.statusAt || 0) >= mStart) { soldM.n++; soldM.inst += inst; soldM.mon += mon; } }
   }
   const dealCard = `<div class="card"><h3>Deals</h3><div class="kpis">
     <div class="kpi"><b>${soldM.n}</b><span>Sold this month</span></div><div class="kpi"><b>${money(soldM.inst)}</b><span>Install this month</span></div><div class="kpi"><b>${money(soldM.mon)}</b><span>Monthly added</span></div></div>
     <div class="kpis" style="margin-top:8px"><div class="kpi"><b>${pipe.n}</b><span>Open deals</span></div><div class="kpi"><b>${money(pipe.inst)}</b><span>Install in pipeline</span></div><div class="kpi"><b>${money(pipe.mon)}</b><span>Monthly in pipeline</span></div></div>
+    <p class="small">Right now: ${['appt', 'quote', 'sent'].map(k => Object.values(state.records).filter(r => r.status === k).length + ' ' + S[k].label.toLowerCase()).join(' · ')}</p>
     ${allFutures().length ? `<p class="small">Future proposals: ${allFutures().length} open · ${money(allFutures().reduce((a, x) => a + (+x.f.install || 0), 0))} install · ${money(allFutures().reduce((a, x) => a + (+x.f.monthly || 0), 0))}/mo potential</p>` : ''}
     <p class="small" style="margin-bottom:0">All time sold: ${soldAll.n} · ${money(soldAll.inst)} install · ${money(soldAll.mon)}/mo. Add $ on any deal from its Deal box.</p></div>`;
   let h = `<div class="page-title">Stats</div><div class="page-sub">How your prospecting is going. Updates as you log visits.</div>
@@ -1883,7 +1900,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v23 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v24 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
