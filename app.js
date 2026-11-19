@@ -500,7 +500,7 @@ function renderSheet(opts = {}) {
   </div>
   <div class="stabs" role="tablist">
     <button data-stab="visit" class="${sheetTab === 'visit' ? 'on' : ''}">Visit</button>
-    <button data-stab="notes" class="${sheetTab === 'notes' ? 'on' : ''}">Notes &amp; photos${photos.length ? ` <span class="cnt">${photos.length}</span>` : r.notes ? ' <span class="cnt">•</span>' : ''}</button>
+    <button data-stab="notes" class="${sheetTab === 'notes' ? 'on' : ''}">Notes &amp; photos${photos.length ? ` <span class="cnt">${photos.length}</span>` : (r.notes || (r.noteLog || []).length) ? ' <span class="cnt">•</span>' : ''}</button>
     <button data-stab="details" class="${sheetTab === 'details' ? 'on' : ''}">Details</button>
   </div>`;
   // ---- Visit tab ----
@@ -524,7 +524,11 @@ function renderSheet(opts = {}) {
   }
   // ---- Notes & photos tab ----
   if (sheetTab === 'notes') {
-    h += `<div class="field" style="margin-top:14px"><label>General notes</label>
+    const log = (r.noteLog || []).slice().reverse();
+    h += `<div class="field" style="margin-top:14px"><label>Quick notes (time-stamped)</label>
+     <div style="display:flex;gap:8px;align-items:flex-end"><textarea id="qnText" rows="2" style="flex:1;min-height:48px" placeholder="Type or tap the mic on your keyboard…"></textarea><button class="btn primary" data-act="qnAdd" style="padding:12px 16px">Add</button></div>
+     ${log.length ? `<div class="qnlist">${log.map(n => `<div class="hrow"><div class="when">${fmtWhen(n.t)}</div><div class="what" style="white-space:pre-wrap">${esc(n.text)}</div><button class="del" data-qndel="${n.t}" aria-label="Delete">✕</button></div>`).join('')}</div>` : '<div class="small">Good for appointments: add a note each time something comes up. Each one gets the time.</div>'}</div>
+   <div class="field"><label>General notes</label>
      <textarea data-f="notes" class="notes-big" placeholder="Anything worth remembering: pain points, who to ask for, best time to come back, what you saw on the walkthrough…">${esc(r.notes || '')}</textarea>
      <div class="small">Saves as you type.</div></div>
    <div class="sec-label"><span>Walkthrough photos (${photos.length})</span></div>
@@ -651,6 +655,8 @@ $('#sheet').addEventListener('click', e => {
   }
   if (act === 'move') startPlace(id);
   if (t.dataset.stab) { sheetTab = t.dataset.stab; renderSheet(); return; }
+  if (act === 'qnAdd') { const ta = $('#qnText'), v = ta.value.trim(); if (!v) { ta.focus(); return; } const r = touch(id); r.noteLog = (r.noteLog || []).concat({ t: Date.now(), text: v }); commit(); renderSheet({ tab: 'notes' }); setTimeout(() => { const x = $('#qnText'); if (x) x.focus(); }, 50); return; }
+  if (t.dataset.qndel) { const r = touch(id); r.noteLog = (r.noteLog || []).filter(n => String(n.t) !== t.dataset.qndel); commit(); renderSheet({ tab: 'notes' }); return; }
   if (t.dataset.pv) { showPhoto(id, t.dataset.pv); return; }
   if (act === 'next') {
     const b0 = bizIndex.get(id), today = todayStr();
@@ -894,6 +900,7 @@ function renderFollow() {
 $('#follow').addEventListener('click', e => {
   const t = e.target;
   if (t.id === 'planBtn' || t.id === 'planNew') return openPlanModal();
+  if (t.id === 'planClear') { state.plan = null; filters.planOnly = false; state.updatedAt = Date.now(); $('#filterDot').classList.toggle('hidden', !filterActive()); commit(); renderFollow(); toast('Plan cleared'); return; }
   if (t.id === 'planMap') {
     filters.planOnly = !filters.planOnly; $('#filterDot').classList.toggle('hidden', !filterActive());
     if (filters.planOnly) { switchView('map'); const pts = state.plan.ids.map(id => bizIndex.get(id)).filter(Boolean).map(b => [b.lat, b.lon]); if (pts.length) map.fitBounds(pts, { padding: [40, 40] }); }
@@ -961,6 +968,7 @@ function planHtml() {
     (leg.length > 1 ? '&waypoints=' + leg.slice(0, -1).map(b => b.lat + ',' + b.lon).join('%7C') : '');
   return `<div class="card"><h3>Today's plan · ${done} of ${items.length} done</h3>
    <div class="two"><button class="btn" id="planMap">${filters.planOnly ? 'Show everything' : 'Show on map'}</button><button class="btn" id="planNew">New plan</button></div>
+   <button class="btn block ghost" id="planClear">Clear plan</button>
    ${legs.length ? `<p class="small" style="margin:10px 0 4px">Open in Google Maps (9 stops at a time):</p><div class="chips">${legs.map((l, i) => `<a class="chip" href="${legUrl(l)}" target="_blank" rel="noopener">Stops ${done + i * 9 + 1}–${done + i * 9 + l.length}</a>`).join('')}</div>` : '<p class="small ok">All done. Nice work.</p>'}
    <div style="margin-top:8px">${items.map((b, i) => { const r = rec(b.id), due = r && r.followUp && r.followUp <= todayStr(); return `<div class="item" data-id="${b.id}" style="padding:10px 0;${planDone(b.id) ? 'opacity:.45' : ''}"><span class="pnum">${planDone(b.id) ? '✓' : i + 1}</span>
      <div class="main"><div class="nm">${esc(b.name)}</div><div class="sub">${due ? '<b style="color:#2563eb">Follow-up</b> · ' : ''}${esc(b.cat)}${b.addr ? ' · ' + esc(b.addr) : ''}</div></div>
@@ -1294,8 +1302,9 @@ function dayEntries(day) {
     const vs = (r.visits || []).filter(v => ymd(new Date(v.t)) === day);
     const cards = (r.cards || []).filter(c => ymd(new Date(c.t)) === day);
     const pics = (r.photos || []).filter(p => ymd(new Date(p.t)) === day);
-    if (!vs.length && !cards.length && !pics.length) continue;
-    out.push({ b, r, vs, cards, pics, first: Math.min(...vs.map(v => v.t), ...cards.map(c => c.t), ...pics.map(p => p.t)) });
+    const qn = (r.noteLog || []).filter(n => ymd(new Date(n.t)) === day);
+    if (!vs.length && !cards.length && !pics.length && !qn.length) continue;
+    out.push({ b, r, vs, cards, pics, qn, first: Math.min(...vs.map(v => v.t), ...cards.map(c => c.t), ...pics.map(p => p.t), ...qn.map(n => n.t)) });
   }
   return out.sort((a, b) => a.first - b.first);
 }
@@ -1313,6 +1322,7 @@ function entryText(e) {
   for (const f of (state.fields || [])) { const v = (r.custom || {})[f.id]; if (v) L.push(f.name + ': ' + v); }
   if (r.dealInstall || r.dealMonthly) L.push('Deal: ' + [r.dealInstall && money(r.dealInstall) + ' install', r.dealMonthly && money(r.dealMonthly) + '/mo'].filter(Boolean).join(', '));
   if (r.followUp) L.push('Follow-up: ' + fmtDate(r.followUp));
+  if (e.qn && e.qn.length) { L.push('Notes from today:'); for (const n of e.qn) L.push('  ' + new Date(n.t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' - ' + n.text); }
   if (r.notes) L.push('Notes: ' + r.notes);
   if (e.pics && e.pics.length) L.push(`Walkthrough photos: ${e.pics.length}` + (e.pics.some(p => p.caption) ? ' (' + e.pics.filter(p => p.caption).map(p => p.caption).join('; ') + ')' : ''));
   return L.join('\n');
@@ -1585,7 +1595,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v17 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v18 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
