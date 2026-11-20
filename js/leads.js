@@ -139,19 +139,41 @@ function permitTime(p) { const m = String(p.date || '').match(/(\d{1,2})\/(\d{1,
 function allNewPermits() { return Object.values(state.permits || {}).filter(p => p.status === 'new' && !p.outside); }
 function livePermits() { return allNewPermits().filter(p => settings.showNoisePermits || !permitNoise(p)); }
 let permitMarkers = new Map();
+// Permits at the same spot (a big project often has one permit per building) share one pin with a count.
+const permitSpot = p => p.lat.toFixed(4) + ',' + p.lon.toFixed(4);
+let permitGroup = null;
 function drawPermits() {
   const show = filters.permits && !filters.planOnly ? livePermits().filter(p => p.lat != null) : [];
-  const ids = new Set(show.map(p => p.id));
-  for (const [id, m] of permitMarkers) if (!ids.has(id)) { map.removeLayer(m); permitMarkers.delete(id); }
+  const groups = new Map();
+  for (const p of show) { const k = permitSpot(p); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); }
+  for (const [k, m] of permitMarkers) { const g = groups.get(k); if (!g || (m._kmCount || 1) !== g.length) { map.removeLayer(m); permitMarkers.delete(k); } }
   const r = radiusForZoom() + 2;
-  for (const p of show) {
-    const sel = currentPermit === p.id;
-    const style = { radius: sel ? r + 4 : r, fillColor: '#f97316', color: sel ? '#0f172a' : '#fff', weight: sel ? 3 : 2, fillOpacity: 1, renderer };
-    let m = permitMarkers.get(p.id);
-    if (!m) { m = L.circleMarker([p.lat, p.lon], style).addTo(map); m.on('click', () => openPermit(p.id)); permitMarkers.set(p.id, m); }
-    else { m.setStyle(style); m.setRadius(style.radius); }
-    m.bringToFront();
+  for (const [k, g] of groups) {
+    const sel = g.some(p => p.id === currentPermit);
+    let m = permitMarkers.get(k);
+    if (g.length === 1) {
+      const style = { radius: sel ? r + 4 : r, fillColor: '#f97316', color: sel ? '#0f172a' : '#fff', weight: sel ? 3 : 2, fillOpacity: 1, renderer };
+      if (!m) { m = L.circleMarker([g[0].lat, g[0].lon], style).addTo(map); m.on('click', () => { permitGroup = null; openPermit(g[0].id); }); permitMarkers.set(k, m); }
+      else { m.setStyle(style); m.setRadius(style.radius); }
+      m.bringToFront();
+    } else {
+      const ids = g.map(p => p.id);
+      const icon = L.divIcon({ className: '', html: `<div class="permit-stack${sel ? ' sel' : ''}">${g.length}</div>`, iconSize: [28, 28], iconAnchor: [14, 14] });
+      if (!m) { m = L.marker([g[0].lat, g[0].lon], { icon, zIndexOffset: 500 }).addTo(map); m._kmCount = g.length; permitMarkers.set(k, m); }
+      else m.setIcon(icon);
+      m.off('click'); m.on('click', () => openPermitGroup(ids));
+    }
   }
+}
+function openPermitGroup(ids) {
+  const ps = ids.map(id => state.permits[id]).filter(Boolean); if (!ps.length) return;
+  permitGroup = ids; current = null; currentPermit = ps[0].id;
+  const addrs = [...new Set(ps.map(permitAddr))];
+  $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${ps.length} permits here</h3><button class="closex" data-pact="close" aria-label="Close">${ICON('x')}</button></div>
+   <div class="meta"><span class="pill" style="--c:#f97316">Permits</span> ${esc(addrs.slice(0, 2).join(' · '))}${addrs.length > 2 ? ' +' + (addrs.length - 2) : ''}</div>
+   <p class="small">Usually one project with a permit for each building or phase. Tap one for the details.</p>
+   ${ps.sort((a, b) => permitScore(b) - permitScore(a)).map(p => `<button class="futrow" data-pact="open" data-pid="${p.id}"><span style="flex:1;text-align:left"><b>${esc(permitTitle(p))}</b><br><span class="small">${esc(permitAddr(p))}${p.date ? ' · ' + esc(p.date) : ''}</span></span><span class="small" style="white-space:nowrap">${permitValue(p)}</span></button>`).join('')}`;
+  $('#sheet').classList.remove('hidden'); drawMarkers();
 }
 function permitTitle(p) {
   const d = (p.desc || '').replace(/\s+/g, ' ').trim();
@@ -166,7 +188,8 @@ function openPermit(id, fly) {
   current = null; currentPermit = id;
   const nav = p.lat != null ? 'https://www.google.com/maps/dir/?api=1&destination=' + p.lat + ',' + p.lon : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(p.addr + ' ' + (p.city || '') + ' AZ');
   const row = (k, v) => v ? `<div class="brow"><span class="l" style="width:92px;color:#64748b">${k}</span><span style="flex:1">${esc(v)}</span></div>` : '';
-  $('#sheetBody').innerHTML = `<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close" aria-label="Close">${ICON('x')}</button></div>
+  if (permitGroup && !permitGroup.includes(id)) permitGroup = null;
+  $('#sheetBody').innerHTML = `${permitGroup && permitGroup.length > 1 ? `<button class="chip" data-pact="back" style="margin-bottom:8px">← All ${permitGroup.length} permits here</button>` : ''}<div class="sh-title"><h3>${esc(permitTitle(p))}</h3><button class="closex" data-pact="close" aria-label="Close">${ICON('x')}</button></div>
    <div class="meta"><span class="pill" style="--c:#f97316">Permit${p.kind === 'commercial' ? ' · commercial' : ''}</span> ${esc(permitAddr(p))}${p.city ? ', ' + esc(p.city) : ''} ${esc(p.zip || '')}</div>
    ${row('Permit #', p.permit)}${row('Issued', p.date)}${row('Type', p.type)}${row('Work', p.desc)}${row('Value', permitValue(p))}${row('Owner', permitOwner(p))}${row('Contractor', p.contractor)}${row('GC phone', p.cphone)}${row('GC email', p.cemail)}${row('Parcel', p.parcel)}
    ${p.lat == null ? '<p class="small">Not on the map yet' + (p.geoFail ? ': the address lookup came up empty. Tap Directions to find it in Google Maps.' : '.') + '</p>' : p.approx ? '<p class="small">Pin is on the right street but the exact spot is a guess.</p>' : ''}
@@ -180,7 +203,9 @@ function openPermit(id, fly) {
 $('#sheet').addEventListener('click', e => {
   const t = e.target.closest('[data-pact]'); if (!t || !currentPermit) return;
   const p = state.permits[currentPermit];
-  if (t.dataset.pact === 'close') { currentPermit = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
+  if (t.dataset.pact === 'open') { openPermit(t.dataset.pid); return; }
+  if (t.dataset.pact === 'back') { openPermitGroup(permitGroup); return; }
+  if (t.dataset.pact === 'close') { permitGroup = null; currentPermit = null; $('#sheet').classList.add('hidden'); drawMarkers(); }
   if (t.dataset.pact === 'dismiss') { p.status = 'dismissed'; p.updatedAt = state.updatedAt = Date.now(); currentPermit = null; $('#sheet').classList.add('hidden'); commit(); toast('Permit hidden'); }
   if (t.dataset.pact === 'convert') {
     const lat = p.lat != null ? p.lat : (me ? me.lat : map.getCenter().lat), lon = p.lon != null ? p.lon : (me ? me.lon : map.getCenter().lng);

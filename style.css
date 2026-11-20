@@ -230,3 +230,5 @@ details.card.more>summary{padding:16px 0}
 .oldver .btn{white-space:nowrap}
 .gonebox{margin:8px 0}.gonebox summary{padding:10px 16px;color:var(--muted);font-size:13px;font-weight:600;cursor:pointer}
 .outcomes.stage button{padding:10px 12px;font-size:13.5px}
+.permit-stack{width:28px;height:28px;border-radius:50%;background:#f97316;border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);color:#fff;font:700 12px/23px Inter,system-ui,sans-serif;text-align:center}
+.permit-stack.sel{border-color:#0f172a}

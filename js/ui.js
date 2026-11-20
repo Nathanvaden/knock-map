@@ -62,7 +62,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v30 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v31 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -244,6 +244,6 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   if (!settings.seenHelp) { settings.seenHelp = true; saveLocalSoon(); setTimeout(showHelp, 600); }
   else if (!BIZ.length) toast('Start here: tap "Load businesses"');
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register(KM_BASE + 'sw.js').catch(() => {});
-  window.__km = { get state() { return state; }, get BIZ() { return BIZ; }, logOutcome, openBiz, sync, mergeInto, zipOf, loadBusinesses };
+  window.__km = { get state() { return state; }, get BIZ() { return BIZ; }, logOutcome, openBiz, sync, mergeInto, zipOf, loadBusinesses, drawMarkers, get map() { return map; } };
 })();
 window.__kmLoaded = true;
