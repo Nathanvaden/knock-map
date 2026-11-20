@@ -365,7 +365,7 @@ let custByBiz = new Map();
 function reindexCustomers() { custByBiz = new Map(); for (const c of Object.values(state.customers || {})) if (c.bizId) custByBiz.set(c.bizId, c); }
 function customerOf(id) { return custByBiz.get(id); }
 function custServices(c) { const v = c.services.map(s => s.venue).join(' '); return SERVICE_KINDS.filter(k => k.re.test(v)); }
-function custGaps(c) { const have = new Set(custServices(c).map(k => k.k)); return SERVICE_KINDS.filter(k => !have.has(k.k)); }
+function custGaps(c) { if (!c.services.some(s => s.venue)) return []; const have = new Set(custServices(c).map(k => k.k)); return SERVICE_KINDS.filter(k => !have.has(k.k)); }
 function streetBase(a) {
   // "15396 N 83RD AVE 303" -> "15396 N 83RD AVE"; normalizes spacing and common suffixes
   a = String(a || '').toUpperCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
@@ -385,7 +385,7 @@ async function importCustomers(file, includeRes) {
   if (hi < 0) throw new Error('no NAME and ADDRESS columns found');
   const H = rows[hi].map(c => String(c).trim().toLowerCase());
   const col = k => H.findIndex(h => k.test(h));
-  const C = { acct: col(/^acct|account/), name: col(/^name$|company/), venue: col(/venue|service|type/), key: col(/^key$|class|segment/), msr: col(/msr|monthly|rmr|amount/), addr: col(/address/), city: col(/city/), zip: col(/zip/) };
+  const C = { acct: col(/^acct|account/), name: col(/^name$|company/), venue: col(/venue|service|type/), loc: col(/alias|location/), key: col(/^key$|class|segment/), msr: col(/msr|monthly|rmr|amount/), addr: col(/address/), city: col(/city/), zip: col(/zip/) };
   const g = (r, k) => C[k] >= 0 ? String(r[C[k]] || '').trim() : '';
   const myZips = new Set(TERRITORY.features.map(f => f.properties.zip));
   let read = 0, skippedRes = 0, skippedArea = 0;
@@ -402,7 +402,7 @@ async function importCustomers(file, includeRes) {
     const site = sites.get(key) || { id: 'k' + key.replace(/[^A-Z0-9]/g, '').slice(0, 40), name, addr: base, suites: new Set(), city: g(r, 'city'), zip, kind, services: [] };
     const suite = addr.toUpperCase().replace(/\s+/g, ' ').trim().slice(base.length).trim(); if (suite) site.suites.add(suite);
     const msr = parseFloat(g(r, 'msr').replace(/[^0-9.]/g, '')) || 0;
-    site.services.push({ acct: g(r, 'acct'), venue: g(r, 'venue'), msr });
+    site.services.push({ acct: g(r, 'acct'), venue: g(r, 'venue'), msr, ...(g(r, 'loc') ? { loc: g(r, 'loc') } : {}) });
     if (kind === 'KEY' || (kind === 'COM' && site.kind !== 'KEY')) site.kind = kind;
     sites.set(key, site);
   }
@@ -459,9 +459,10 @@ function custBoxHtml(id) {
   const c = customerOf(id); if (!c) return '';
   const gaps = custGaps(c), billingOnly = !c.msr && c.services.every(s => /BILLING/i.test(s.venue));
   return `<div class="fu-box cust"><div class="lbl" style="display:flex;justify-content:space-between"><span>Bay Alarm customer${c.kind === 'KEY' ? ' · key account' : ''}</span><span>${c.msr ? money(c.msr) + '/mo' : ''}</span></div>
-    ${c.services.map(s => `<div class="brow" style="margin:3px 0"><span style="flex:1">${esc(s.venue)}</span><span class="small">#${esc(s.acct)}</span><span class="n">${s.msr ? '$' + s.msr.toFixed(2) : '–'}</span></div>`).join('')}
+    ${c.services.map(s => `<div class="brow" style="margin:3px 0"><span style="flex:1">${esc([s.venue, s.loc].filter(Boolean).join(' · ') || 'Account')}</span><span class="small">#${esc(s.acct)}</span><span class="n">${s.msr ? '$' + s.msr.toFixed(2) : '–'}</span></div>`).join('')}
     ${c.suites && c.suites.length ? `<div class="small">Suites: ${c.suites.map(esc).join(', ')}</div>` : ''}
     ${billingOnly ? '<p class="small" style="margin:6px 0 0"><b>Billing only, $0 monitoring.</b> Could be a win-back.</p>'
+      : !c.services.some(s => s.venue) ? '<p class="small" style="margin:6px 0 0">Which services they have isn\'t in this list. Check the account before pitching.</p>'
       : gaps.length ? `<p class="small" style="margin:6px 0 0">Not on: <b>${gaps.map(k => k.label).join(', ')}</b>. Upsell chance.</p>` : ''}</div>`;
 }
 
