@@ -62,7 +62,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v32 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v33 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -105,7 +105,8 @@ $('#settings').addEventListener('change', async e => {
     try {
       const r = await importPermits(f, $('#pmCom').checked);
       permitMsg = { text: `Read ${r.seen} permits. ${r.added} new in your zips. Skipped ${r.skippedArea} outside your territory${$('#pmCom').checked ? ' and ' + r.skippedRes + ' residential in your zips' : ''}.${!r.added && r.skippedRes ? ' No commercial permits in your area this time.' : ''}`, err: false };
-      if (!r.seen) permitMsg = { text: "Couldn't find the permit rows in that file (no address column found). Send me the file and I'll adjust it.", err: true };
+      if (r.customerList) permitMsg = { text: 'That looks like the Bay Alarm customer list, not a permit file. Use Import customers below instead.', err: true };
+      else if (!r.seen) permitMsg = { text: "Couldn't find the permit rows in that file (no address column found). Send me the file and I'll adjust it.", err: true };
       msg.textContent = permitMsg.text; msg.style.color = permitMsg.err ? '#e5484d' : '';
       geocodePermits(m => { const el = $('#pmGeo'); if (el) el.textContent = m; });
     } catch (err) { permitMsg = { text: 'Could not read that file: ' + err.message, err: true }; msg.textContent = permitMsg.text; msg.style.color = '#e5484d'; }
@@ -155,6 +156,25 @@ $('#filterBtn').onclick = () => {
     $('#filterDot').classList.toggle('hidden', !filterActive()); refreshAll();
   };
 };
+// Collapsible sections on Plan and Pipeline: tap a heading to fold it. Remembered per device.
+function sectionKey(h) { return h.textContent.replace(/\(.*$/s, '').replace(/·.*$/s, '').trim(); }
+function applyCollapse(el) {
+  if (!el) return;
+  const searching = !!(filters.q || '').trim(), col = settings.collapsed || {};
+  el.querySelectorAll('h2.sec').forEach(h => {
+    h.classList.add('coll-h'); const shut = !searching && !!col[sectionKey(h)]; h.classList.toggle('shut', shut);
+    let n = h.nextElementSibling;
+    while (n && !n.matches('h2.sec, .card')) { n.classList.toggle('coll-hide', shut); n = n.nextElementSibling; }
+  });
+  el.querySelectorAll('.card > h3:first-child').forEach(h => { h.classList.add('coll-h'); const shut = !searching && !!col[sectionKey(h)]; h.classList.toggle('shut', shut); h.parentElement.classList.toggle('collapsed', shut); });
+}
+['#follow', '#pipe'].forEach(sel => $(sel).addEventListener('click', e => {
+  const h = e.target.closest('.coll-h'); if (!h || e.target.closest('button, a, input')) return;
+  e.stopPropagation(); settings.collapsed = settings.collapsed || {}; const k = sectionKey(h);
+  if (settings.collapsed[k]) delete settings.collapsed[k]; else settings.collapsed[k] = true;
+  saveLocal(); applyCollapse($(sel));
+}, true));
+
 // Search works on every tab: Map/Nearby filter businesses; Plan and Pipeline filter their own lists.
 function searchPage(el) {
   if (!el) return;
@@ -168,6 +188,7 @@ function searchPage(el) {
   let note = el.querySelector('.searchnote');
   if (q) { const n = [...el.querySelectorAll('.item')].filter(i => i.style.display !== 'none').length; if (!note) { note = document.createElement('div'); note.className = 'searchnote small'; el.querySelector('.page-sub')?.after(note); } note.textContent = n ? `Showing ${n} match${n === 1 ? '' : 'es'} for "${filters.q.trim()}"` : `Nothing here matches "${filters.q.trim()}"`; }
   else if (note) note.remove();
+  applyCollapse(el);
 }
 let st; $('#search').addEventListener('input', e => { clearTimeout(st); st = setTimeout(() => {
   filters.q = e.target.value; listLimit = 100;
@@ -256,6 +277,7 @@ window.addEventListener('online', () => { if (dirty) sync(); });
   setBadge(syncReady() ? 'ok' : 'off');
   startGPS();
   if (syncReady()) sync();
+  setTimeout(() => { if (cleanJunkPermits()) drawMarkers(); }, syncReady() ? 6000 : 500);
   if (!settings.geoRetry9) { settings.geoRetry9 = true; for (const p of Object.values(state.permits || {})) if (p.geoFail) { p.geoFail = false; p.updatedAt = Date.now(); } }
   setTimeout(() => { if (Object.values(state.customers || {}).some(c => !c.bizId && !c.geoFail)) placeCustomers(); }, 7000);
   setTimeout(() => { if (Object.values(state.permits || {}).some(p => p.status === 'new' && p.lat == null && !p.geoFail)) geocodePermits(); }, 5000);

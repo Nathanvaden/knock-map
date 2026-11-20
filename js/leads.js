@@ -27,6 +27,7 @@ async function importPermits(file, commercialOnly) {
     }
     if (hi < 0) continue;
     const H = rows[hi].map(c => String(c).trim().toLowerCase()); const taken = new Set();
+    if (H.includes('acct') || H.includes('msr') || H.includes('venue')) return { added: 0, seen: 0, skippedArea: 0, skippedRes: 0, customerList: true };
     const col = {
       permit: findCol(H, /permit.*(no|num|#|id)|^permit$|^record|case.*(no|num)|^number$/, taken),
       date: findCol(H, /issue.*date|date.*issue|^issued|^date/, taken),
@@ -63,6 +64,7 @@ async function importPermits(file, commercialOnly) {
       const isRes = /residential/i.test(tcol) ? true : /commercial/i.test(tcol) ? false : (RES_RE.test(text) && !COM_RE.test(text));
       if (commercialOnly && isRes) { skippedRes++; continue; }
       const permit = g(row, 'permit');
+      if (!permit && !g(row, 'date') && !g(row, 'type') && !g(row, 'work')) { seen--; continue; }
       const id = 'p' + (permit ? permit.replace(/[^A-Za-z0-9]/g, '') : (addr + text).toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 40));
       const old = state.permits[id];
       state.permits[id] = { ...(old || {}), id, permit, date: g(row, 'date'), addr, city, zip, type: [g(row, 'type'), g(row, 'work')].filter(Boolean).join(' · '), desc: g(row, 'desc'), value: g(row, 'value'),
@@ -133,10 +135,17 @@ async function geocodePermits(onProgress) {
 }
 // Permits that aren't a business moving in or building out: hidden unless "show hidden" is on
 const PERMIT_NOISE = /annual facilities|\bAFP\b|\bfences?\b|propane|photovoltaic|\bsolar\b|\bPV\b|battery storage|well ?head|water treatment|\bEPCOR\b|wireless|cell tower|\bWCF\b|utility|compliance inspection|irrigation|\bpools?\b|\bspa\b|demolition|re-?roof|water heater|hvac|backflow/i;
-function permitNoise(p) { return p.kind === 'residential' || PERMIT_NOISE.test([p.type, p.desc].join(' ')); }
+function permitNoise(p) { return p.kind !== 'commercial' || PERMIT_NOISE.test([p.type, p.desc].join(' ')); }
 function permitScore(p) { const t = [p.type, p.desc].join(' '); return /\bsigns?\b|letters|pylon|monument/i.test(t) ? 3 : /tenant|\bT\.?I\.?\b|remodel|alteration|new construction|new building|shell|addition|build-?out|suite/i.test(t) ? 2 : 1; }
 function permitTime(p) { const m = String(p.date || '').match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? new Date(+m[3], +m[1] - 1, +m[2]).getTime() : (p.importedAt || 0); }
-function allNewPermits() { return Object.values(state.permits || {}).filter(p => p.status === 'new' && !p.outside); }
+// A real permit has a permit number, an issue date or a permit type. Rows without any of those
+// (e.g. a customer list loaded through the permit import by mistake) are not permits.
+function isRealPermit(p) { return !!(p.permit || p.date || p.type); }
+function allNewPermits() { return Object.values(state.permits || {}).filter(p => p.status === 'new' && !p.outside && isRealPermit(p)); }
+function cleanJunkPermits() {
+  let n = 0; for (const p of Object.values(state.permits || {})) if (p.status === 'new' && !isRealPermit(p)) { p.status = 'junk'; p.updatedAt = Date.now(); n++; }
+  if (n) { state.updatedAt = Date.now(); commit(); } return n;
+}
 function livePermits() { return allNewPermits().filter(p => settings.showNoisePermits || !permitNoise(p)); }
 let permitMarkers = new Map();
 // Permits at the same spot (a big project often has one permit per building) share one pin with a count.
