@@ -232,3 +232,4 @@ details.card.more>summary{padding:16px 0}
 .outcomes.stage button{padding:10px 12px;font-size:13.5px}
 .permit-stack{width:28px;height:28px;border-radius:50%;background:#f97316;border:2.5px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35);color:#fff;font:700 12px/23px Inter,system-ui,sans-serif;text-align:center}
 .permit-stack.sel{border-color:#0f172a}
+.searchnote{margin:0 16px 8px;font-weight:600;color:var(--ink)}

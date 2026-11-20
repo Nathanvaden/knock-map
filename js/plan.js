@@ -61,7 +61,7 @@ function renderFollow() {
   $('#follow').innerHTML = '<div class="page-title">Plan</div><div class="page-sub">Where to go: today\'s route, follow-ups that are due, expiring contracts, new permits, construction, for lease signs and landlords.</div>' + planHtml() + (h || '<div class="empty"><b>No follow-ups yet</b>When you log a visit, pick a follow-up date and it shows up here.</div>') + leasesHtml() + landlordsHtml();
   const due = groups[0][1].length + groups[1][1].length;
   $('#fuCount').textContent = due; $('#fuCount').classList.toggle('hidden', !due);
-  renderPipe();
+  renderPipe(); searchPage($('#follow'));
 }
 $('#follow').addEventListener('click', e => {
   const t = e.target;
@@ -168,7 +168,7 @@ function renderPipe() {
   h += sec('quote', 'Quotes to build', byAt) + sec('sent', 'Quotes out, waiting on a yes', (a, b) => (a.r.quoteSentAt || a.r.statusAt || 0) - (b.r.quoteSentAt || b.r.statusAt || 0)) + sec('appt', 'Appointments set', (a, b) => (a.r.followUp || '9').localeCompare(b.r.followUp || '9')) + sec('sold', 'Sold in the last 30 days', (a, b) => b.r.statusAt - a.r.statusAt);
   if (!open.length && !rows.sold.length) h += '<div class="empty"><b>No deals yet</b>Tap <b>Appt set</b> on a business and it shows up here. It moves to Building quote when you end the appointment.</div>';
   h += futuresListHtml();
-  el.innerHTML = h;
+  el.innerHTML = h; searchPage(el);
   const badge = rows.quote.length + allFutures().filter(x => x.f.revisit && x.f.revisit <= todayStr()).length;
   $('#pipeCount').textContent = badge; $('#pipeCount').classList.toggle('hidden', !badge);
 }

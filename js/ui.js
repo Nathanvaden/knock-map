@@ -62,7 +62,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v31 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v32 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -155,7 +155,26 @@ $('#filterBtn').onclick = () => {
     $('#filterDot').classList.toggle('hidden', !filterActive()); refreshAll();
   };
 };
-let st; $('#search').addEventListener('input', e => { clearTimeout(st); st = setTimeout(() => { filters.q = e.target.value; listLimit = 100; refreshAll(); if (filters.q && $('#view-map').classList.contains('active')) switchView('list'); }, 250); });
+// Search works on every tab: Map/Nearby filter businesses; Plan and Pipeline filter their own lists.
+function searchPage(el) {
+  if (!el) return;
+  const q = (filters.q || '').trim().toLowerCase();
+  el.querySelectorAll('.item').forEach(it => { it.style.display = !q || (it.dataset.q || '').includes(q) || it.textContent.toLowerCase().includes(q) ? '' : 'none'; });
+  el.querySelectorAll('h2.sec').forEach(h => {
+    let n = h.nextElementSibling, any = false, has = false;
+    while (n && !n.matches('h2.sec')) { if (n.classList.contains('item')) { has = true; if (n.style.display !== 'none') any = true; } n = n.nextElementSibling; }
+    h.style.display = q && has && !any ? 'none' : '';
+  });
+  let note = el.querySelector('.searchnote');
+  if (q) { const n = [...el.querySelectorAll('.item')].filter(i => i.style.display !== 'none').length; if (!note) { note = document.createElement('div'); note.className = 'searchnote small'; el.querySelector('.page-sub')?.after(note); } note.textContent = n ? `Showing ${n} match${n === 1 ? '' : 'es'} for "${filters.q.trim()}"` : `Nothing here matches "${filters.q.trim()}"`; }
+  else if (note) note.remove();
+}
+let st; $('#search').addEventListener('input', e => { clearTimeout(st); st = setTimeout(() => {
+  filters.q = e.target.value; listLimit = 100;
+  const onPage = ['follow', 'pipe'].find(v => $('#view-' + v).classList.contains('active'));
+  if (onPage) { searchPage($('#' + onPage)); drawMarkers(); return; }
+  refreshAll(); if (filters.q && $('#view-map').classList.contains('active')) switchView('list');
+}, 250); });
 
 // ---------- help ----------
 function showHelp() {
