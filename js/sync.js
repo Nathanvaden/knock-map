@@ -172,14 +172,14 @@ async function checkBizUpdate(now) {
     await pullBizList(true); settings.bizSha = sha; saveLocal();
   } catch (e) {}
 }
-async function pullBizList(force) {
+async function pullBizList(force, any) {
   if (!syncReady() || (BIZ.length && !force)) return false;
   try {
     const r = await gh('businesses.json', { headers: { Accept: 'application/vnd.github.raw+json' } });
     if (!r.ok) return false;
     const j = await r.json(); if (!j.biz || !j.biz.length) return false;
     // only take it if it's newer or covers more zips than what this device has
-    if (BIZ.length && (j.at || 0) <= bizFetchedAt && Object.keys(j.zips || {}).length <= Object.keys(bizZips).length) return false;
+    if (!any && BIZ.length && (j.at || 0) <= bizFetchedAt && Object.keys(j.zips || {}).length <= Object.keys(bizZips).length) return false;
     const had = BIZ.length;
     BIZ = j.biz; bizZips = j.zips || {}; bizFetchedAt = j.at || Date.now();
     applyMoves(); await kv.set('biz', BIZ); await kv.set('bizZips', bizZips); await kv.set('bizAt', bizFetchedAt);

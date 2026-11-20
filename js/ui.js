@@ -11,6 +11,7 @@ function renderSettings() {
     ${loadStatus.running ? '<button class="btn block primary" disabled>Loading… keep this screen open</button>'
       : zipsLeft() ? `<button class="btn block primary" id="loadBiz">${cnt ? `Finish loading (${zipsLeft()} zips left)` : 'Load businesses'}</button>`
       : '<button class="btn block" id="refreshBiz">Refresh all businesses</button>'}
+    ${syncReady() && !loadStatus.running ? '<button class="btn block" id="cloudBiz">Get the business list from my other device</button>' : ''}
     <div id="loadMsg" class="small" style="${loadStatus.err ? 'color:#e5484d' : ''}">${esc(loadStatus.msg)}</div>
     <p class="small">Loading saves after each zip, so if it stops you can pick up where it left off. Refreshing keeps all your knocks and notes.</p>
   </div>
@@ -62,7 +63,7 @@ function renderSettings() {
   </div>
   <div class="sub-card"><h3>Put it on your home screen</h3><p class="small">In Safari tap the Share button, then <b>Add to Home Screen</b>. It opens full screen like an app.</p></div>
   </details>
-  <p class="footer-note">Knock Map v36 · Map data © OpenStreetMap contributors</p>`;
+  <p class="footer-note">Knock Map v37 · Map data © OpenStreetMap contributors</p>`;
 }
 $('#settings').addEventListener('toggle', e => { if (e.target.classList && e.target.classList.contains('more')) { settings.moreOpen = e.target.open; saveLocalSoon(); } }, true);
 $('#settings').addEventListener('click', async e => {
@@ -70,6 +71,7 @@ $('#settings').addEventListener('click', async e => {
   if (t.id === 'helpLink') { e.preventDefault(); showHelp(); return; }
   if (t.id === 'loadBiz') loadBusinesses(false);
   if (t.id === 'refreshBiz') loadBusinesses(true);
+  if (t.id === 'cloudBiz') { t.disabled = true; t.textContent = 'Checking the cloud…'; pullBizList(true, true).then(ok => { if (!ok) toast("Couldn't get the list. Check that cloud backup is green."); renderSettingsIfOpen(); }); }
   if (t.id === 'saveSync') {
     settings.owner = $('#sOwner').value.trim(); settings.repo = $('#sRepo').value.trim(); settings.token = $('#sToken').value.trim();
     await saveLocal(); await sync(true); renderSettings();
