@@ -24,7 +24,37 @@ function initMap() {
   map.on('dragstart', () => { if (followMe) { followMe = false; $('#locateBtn').classList.remove('on'); } });
   map.on('zoomend', drawMarkers);
   map.on('moveend', updateLabels);
+  map.on('moveend', renderAreaBtn);
+  const ab = $('#areaBtn'); if (ab) ab.onclick = showAreas; renderAreaBtn();
 }
+// ---------- areas (groups of zips hours apart: West Valley, Bullhead City, Kingman…) ----------
+const AREAS = [...new Set(TERRITORY.features.map(f => f.properties.area).filter(Boolean))];
+const areaZips = a => TERRITORY.features.filter(f => f.properties.area === a);
+const areaBounds = a => L.geoJSON({ type: 'FeatureCollection', features: areaZips(a) }).getBounds();
+const zipArea = {}; TERRITORY.features.forEach(f => { zipArea[f.properties.zip] = f.properties.area; });
+function currentArea() {
+  if (!map) return ''; const c = map.getCenter(); let best = '', bd = Infinity;
+  for (const a of AREAS) { const b = areaBounds(a); if (b.contains(c)) return a; const d = c.distanceTo(b.getCenter()); if (d < bd) { bd = d; best = a; } }
+  return map.getZoom() >= 9 ? best : '';
+}
+function renderAreaBtn() {
+  const el = $('#areaBtn'); if (!el) return;
+  if (AREAS.length < 2) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden'); el.innerHTML = `${ICON('locate')}<span>${esc(currentArea() || 'All areas')}</span> ▾`;
+}
+function showAreas() {
+  const stats = {}; AREAS.forEach(a => { stats[a] = { biz: 0, visited: 0, last: 0 }; });
+  for (const b of allBiz()) { const a = zipArea[b.zip]; if (!a) continue; stats[a].biz++; const r = state.records[b.id]; const v = r && r.visits && r.visits.length ? r.visits[r.visits.length - 1].t : 0; if (v) { stats[a].visited++; stats[a].last = Math.max(stats[a].last, v); } }
+  const ago = t => { if (!t) return 'not worked yet'; const d = Math.floor((Date.now() - t) / 864e5); return d <= 0 ? 'worked today' : d === 1 ? 'worked yesterday' : 'last worked ' + d + ' days ago'; };
+  const cur = currentArea();
+  showModal(`<h3>Jump to an area</h3>
+    ${AREAS.map(a => { const s = stats[a], zs = areaZips(a); return `<button class="futrow" data-area="${esc(a)}" style="${a === cur ? 'border-color:var(--accent)' : ''}"><span style="flex:1;text-align:left"><b>${esc(a)}</b><br><span class="small">${zs.map(f => f.properties.zip).join(', ')}</span></span><span class="small" style="text-align:right">${s.biz ? s.biz + ' businesses · ' + s.visited + ' visited' : '<span style="color:var(--danger)">not loaded yet</span>'}<br>${ago(s.last)}</span></button>`; }).join('')}
+    <button class="btn block" data-area="*" style="margin-top:10px">Show the whole territory</button>
+    <button class="btn block ghost" id="areaCancel">Close</button>`);
+  $('#areaCancel').onclick = hideModal;
+  $('#modalBody').querySelectorAll('[data-area]').forEach(b => b.onclick = () => { hideModal(); switchView('map'); map.fitBounds(b.dataset.area === '*' ? zipLayer.getBounds() : areaBounds(b.dataset.area), { padding: [20, 20] }); });
+}
+
 let slt; function saveLocalSoon() { clearTimeout(slt); slt = setTimeout(saveLocal, 800); }
 function radiusForZoom() { const z = map.getZoom(); return z >= 17 ? 9 : z >= 15 ? 7 : z >= 13 ? 5 : 3.5; }
 function drawMarkers() {

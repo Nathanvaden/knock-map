@@ -239,3 +239,5 @@ h2.sec.coll-h.shut::after,.card>h3.coll-h.shut::after{transform:rotate(-45deg);m
 .coll-hide{display:none!important}
 .card.collapsed>*:not(h3:first-child){display:none!important}
 .card.collapsed>h3{margin-bottom:0}
+.areabtn{position:absolute;right:10px;top:10px;z-index:500;background:#fff;color:var(--ink);font:600 12px/1 Inter,system-ui,sans-serif;padding:7px 11px;border-radius:999px;box-shadow:var(--shadow);border:0;display:flex;align-items:center;gap:5px;cursor:pointer}
+.areabtn .ico{width:14px;height:14px}

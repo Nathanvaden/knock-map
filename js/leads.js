@@ -5,7 +5,7 @@
 let currentPermit = null;
 let permitMsg = { text: '', err: false };
 let custMsg = '';
-const TERR_CITIES = /\b(peoria|surprise|el mirage|sun city west|sun city|youngtown)\b/i;
+const TERR_CITIES = new RegExp('\\b(' + [...new Set(TERRITORY.features.map(f => f.properties.city.toLowerCase()))].sort((a, b) => b.length - a.length).join('|') + ')\\b', 'i');
 const RES_RE = /\b(residential|single[- ]?family|sfr|sfd|pool|spa|patio|solar|pv|dwelling|duplex|fence|wall|re-?roof|reroof|water heater|mobile home|manufactured|casita|garage conversion|carport|res\b|addition-res)/i;
 const COM_RE = /\b(commercial|tenant|t\.?i\.?\b|retail|office|restaurant|industrial|warehouse|shell|business|church|school|medical|clinic|dental|hotel|storage|bank|store|suite|ste\b|com\b|comm\b|multi-?family|apartment|assembly|mercantile)/i;
 function loadSheetJS() {
