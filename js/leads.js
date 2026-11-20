@@ -371,7 +371,9 @@ function streetBase(a) {
   a = String(a || '').toUpperCase().replace(/[.,#]/g, ' ').replace(/\s+/g, ' ').trim();
   a = a.replace(/^(\d+)\s+(NORTH|SOUTH|EAST|WEST)\b/, (m, n, d) => n + ' ' + d[0]);
   a = a.replace(/\b(STE|SUITE|UNIT|BLDG|SPC|SPACE|APT)\b.*$/, '').trim();
-  const m = a.match(/^(\d+\s+(?:[NSEW]\s+)?.*?\b(AVE|AVENUE|RD|ROAD|ST|STREET|DR|DRIVE|BLVD|LN|LANE|WAY|PKWY|PKW|PARKWAY|CT|PL|CIR|TRL|HWY|LOOP)\b)/);
+  // rural roads: "650 E RD 3 S" (Chino Valley), highways: "1751 HWY 95", "1524 AZ-89"
+  const rural = a.match(/^\d+\s+[NSEW]\s+(RD|ROAD)\s+\d+\s*[NSEW]?\b/); if (rural) return rural[0].replace(/\bROAD\b/, 'RD');
+  const m = a.match(/^(\d+\s+(?:[NSEW]\s+)?.*?\b(AVE|AVENUE|RD|ROAD|ST|STREET|DR|DRIVE|BLVD|LN|LANE|WAY|PKWY|PKW|PARKWAY|CT|PL|CIR|TRL|HWY\s+\d+|HWY|(?:AZ|US|SR)-?\s?\d+|LOOP)\b)/);
   return (m ? m[1] : a).replace(/\bAVENUE\b/, 'AVE').replace(/\bROAD\b/, 'RD').replace(/\bSTREET\b/, 'ST').replace(/\bDRIVE\b/, 'DR').replace(/\bLANE\b/, 'LN').replace(/\b(PARKWAY|PKW)\b/, 'PKWY');
 }
 const NAME_STOP = new Set(['THE', 'LLC', 'INC', 'CO', 'AND', 'OF', 'AZ', 'ARIZONA', 'CORP', 'CENTER', 'STORE', 'GROUP']);
