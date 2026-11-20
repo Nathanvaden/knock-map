@@ -156,8 +156,21 @@ async function pushBizList() {
   try {
     let sha = null; const h = await gh('businesses.json'); if (h.ok) sha = (await h.json()).sha;
     const content = utf8ToB64(JSON.stringify({ at: bizFetchedAt, zips: bizZips, biz: BIZ }));
-    await gh('businesses.json', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Business list', content, ...(sha ? { sha } : {}) }) });
+    const r = await gh('businesses.json', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: 'Business list', content, ...(sha ? { sha } : {}) }) });
+    if (r.ok) { const j = await r.json(); settings.bizSha = j.content && j.content.sha; saveLocal(); }
   } catch (e) { console.warn('business list upload failed', e); }
+}
+// Another device loaded more zips or refreshed: check the cloud copy's fingerprint now and then
+async function checkBizUpdate(now) {
+  if (!syncReady() || (!now && Date.now() - (settings.bizCheckAt || 0) < 5 * 60e3)) return;
+  settings.bizCheckAt = Date.now();
+  try {
+    const r = await gh('businesses.json');
+    if (r.status === 404) { if (BIZ.length) pushBizList(); return; } // nothing in the cloud yet: upload ours
+    if (!r.ok) return;
+    const sha = (await r.json()).sha; if (!sha || sha === settings.bizSha) return;
+    await pullBizList(true); settings.bizSha = sha; saveLocal();
+  } catch (e) {}
 }
 async function pullBizList(force) {
   if (!syncReady() || (BIZ.length && !force)) return false;
@@ -165,9 +178,12 @@ async function pullBizList(force) {
     const r = await gh('businesses.json', { headers: { Accept: 'application/vnd.github.raw+json' } });
     if (!r.ok) return false;
     const j = await r.json(); if (!j.biz || !j.biz.length) return false;
+    // only take it if it's newer or covers more zips than what this device has
+    if (BIZ.length && (j.at || 0) <= bizFetchedAt && Object.keys(j.zips || {}).length <= Object.keys(bizZips).length) return false;
+    const had = BIZ.length;
     BIZ = j.biz; bizZips = j.zips || {}; bizFetchedAt = j.at || Date.now();
     applyMoves(); await kv.set('biz', BIZ); await kv.set('bizZips', bizZips); await kv.set('bizAt', bizFetchedAt);
-    reindex(); refreshAll(); renderSettingsIfOpen(); toast(BIZ.length + ' businesses copied from your other device');
+    reindex(); refreshAll(); renderSettingsIfOpen(); toast(had ? `Business list updated from your other device (${had} → ${BIZ.length})` : BIZ.length + ' businesses copied from your other device');
     return true;
   } catch (e) { return false; }
 }
@@ -218,7 +234,7 @@ async function sync(manual) {
       state = mergeInto(state, data);
       const body = JSON.stringify({ message: 'Knock log ' + new Date().toISOString(), content: utf8ToB64(JSON.stringify(state)), ...(sha ? { sha } : {}) });
       const r = await gh(DATA_FILE, { method: 'PUT', body, headers: { 'Content-Type': 'application/json' } });
-      if (r.ok) { dirty = false; settings.lastSync = Date.now(); await saveLocal(); setBadge('ok'); if (manual) toast('Synced'); uploadPendingPhotos(); if (!BIZ.length) pullBizList(); else if (!settings.bizPushed) { settings.bizPushed = true; pushBizList(); } break; }
+      if (r.ok) { dirty = false; settings.lastSync = Date.now(); await saveLocal(); setBadge('ok'); if (manual) toast('Synced'); uploadPendingPhotos(); if (!BIZ.length) pullBizList(); else checkBizUpdate(manual); break; }
       if (r.status !== 409 && r.status !== 422) throw new Error('GitHub ' + r.status);
     }
     reindex(); refreshAll();
