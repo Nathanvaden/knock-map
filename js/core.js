@@ -60,7 +60,7 @@ let state = blankState();     // synced data (your knocks)
 let settings = {};            // local only (token etc.)
 let me = null;                // {lat, lon, acc}
 let current = null;           // id of business open in sheet
-let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', planOnly: false, permits: true, customers: true, leases: true, sites: true };
+let filters = { statuses: new Set(), cats: new Set(), zips: new Set(), q: '', planOnly: false, permits: true, customers: true, resCustomers: true, leases: true, sites: true };
 let lastUndo = null;
 let dirty = false;
 

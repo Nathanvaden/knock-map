@@ -138,6 +138,7 @@ function filtered() {
   return allBiz().filter(b => {
     if (plan && !plan.has(b.id)) return false;
     if (!filters.customers && custByBiz.has(b.id)) return false;
+    if (!filters.resCustomers && isResCustomer(custByBiz.get(b.id))) return false;
     if (filters.statuses.size && !filters.statuses.has(statusOf(b.id))) return false;
     if (filters.cats.size && !filters.cats.has(b.cat)) return false;
     if (filters.zips.size && !filters.zips.has(b.zip)) return false;
@@ -149,4 +150,4 @@ function filtered() {
     return true;
   });
 }
-function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size || filters.planOnly || !filters.permits || !filters.customers || !filters.leases || !filters.sites; }
+function filterActive() { return filters.statuses.size || filters.cats.size || filters.zips.size || filters.planOnly || !filters.permits || !filters.customers || !filters.resCustomers || !filters.leases || !filters.sites; }

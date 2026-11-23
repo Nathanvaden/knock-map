@@ -364,6 +364,8 @@ const SERVICE_KINDS = [
 let custByBiz = new Map();
 function reindexCustomers() { custByBiz = new Map(); for (const c of Object.values(state.customers || {})) if (c.bizId) custByBiz.set(c.bizId, c); }
 function customerOf(id) { return custByBiz.get(id); }
+// residential (RES) and employee (EMP) accounts only come in when "Include residential accounts" is checked on import
+const isResCustomer = c => !!c && /^(RES|EMP)$/.test(c.kind || '');
 function custServices(c) { const v = c.services.map(s => s.venue).join(' '); return SERVICE_KINDS.filter(k => k.re.test(v)); }
 function custGaps(c) { if (!c.services.some(s => s.venue)) return []; const have = new Set(custServices(c).map(k => k.k)); return SERVICE_KINDS.filter(k => !have.has(k.k)); }
 function streetBase(a) {
